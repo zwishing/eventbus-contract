@@ -1,0 +1,21 @@
+[package]
+name = "eventbus-contract"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+redis-backend = ["dep:redis", "dep:serde_json"]
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+redis = { version = "1", features = ["tokio-comp", "streams"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+thiserror = "1"
+tokio = { version = "1.42.2", features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+serde_json = "1"
+tokio = { version = "1.42.2", features = ["macros", "rt-multi-thread", "sync", "time"] }
