@@ -3,7 +3,7 @@
 //! Demonstrates the simplest end-to-end flow:
 //!
 //! - Create an in-process `MemoryStreamBackend` (no external services needed)
-//! - Subscribe with `auto_ack` so the bus acks on handler success
+//! - Subscribe with `AckMode::AutoOnHandlerSuccess` so the bus acks on handler success
 //! - Publish a message and wait to receive it
 //!
 //! Run with:
@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use eventbus_contract::redis_stream::{MemoryStreamBackend, RedisStreamBus, RedisStreamBusOptions};
-use eventbus_contract::{Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig};
+use eventbus_contract::{
+    AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig,
+};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -62,10 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 topic: "user.registered".to_string(),
                 consumer_group: "notification-service".to_string(),
                 consumer_name: "worker-1".to_string(),
-                // auto_ack: the bus calls ack() automatically when the handler
-                // returns Ok(()). Use AckMode::Manual when you need to ack
-                // after side-effects (e.g. writing to a database) complete.
-                auto_ack: true,
+                ack_mode: AckMode::AutoOnHandlerSuccess,
                 concurrency: 1,
                 ..Default::default()
             },
@@ -92,8 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             trace_uid: None,
             correlation_uid: None,
         },
-        PublishOptions::new()
-            .with_metadata("source-region", "us-east-1"),
+        PublishOptions::new().with_metadata("source-region", "us-east-1"),
     )
     .await?;
 

@@ -46,6 +46,7 @@ pub trait StreamBackend: Send + Sync + 'static {
         group: &str,
         consumer: &str,
         count: usize,
+        timeout: Duration,
     ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send;
 
     fn ack(
@@ -54,8 +55,6 @@ pub trait StreamBackend: Send + Sync + 'static {
         group: &str,
         message_id: &str,
     ) -> impl Future<Output = Result<(), EventBusError>> + Send;
-
-    fn wait_for_messages(&self, timeout: Duration) -> impl Future<Output = ()> + Send;
 }
 
 #[derive(Debug, Default)]
@@ -107,11 +106,7 @@ impl StreamBackend for MemoryStreamBackend {
         Ok(())
     }
 
-    async fn publish(
-        &self,
-        stream: &str,
-        message: Message,
-    ) -> Result<String, EventBusError> {
+    async fn publish(&self, stream: &str, message: Message) -> Result<String, EventBusError> {
         let id = {
             let mut state = self.state.lock().await;
             let next = state.next_id;
@@ -175,7 +170,7 @@ impl StreamBackend for MemoryStreamBackend {
                     message: pending.message.clone(),
                     state: DeliveryState {
                         attempt: pending.delivery_count,
-                        max_attempt: pending.delivery_count,
+                        max_attempt: 0, // filled by bus layer from SubscriptionConfig
                         first_received: pending.first_received,
                         last_received: pending.last_received,
                         redelivered: pending.redelivered,
@@ -188,6 +183,50 @@ impl StreamBackend for MemoryStreamBackend {
     }
 
     async fn read_new(
+        &self,
+        stream: &str,
+        group: &str,
+        consumer: &str,
+        count: usize,
+        timeout: Duration,
+    ) -> Result<Vec<ClaimedMessage>, EventBusError> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+
+        if timeout.is_zero() {
+            return self
+                .read_new_available(stream, group, consumer, count)
+                .await;
+        }
+
+        let messages = self
+            .read_new_available(stream, group, consumer, count)
+            .await?;
+        if !messages.is_empty() {
+            return Ok(messages);
+        }
+
+        let notified = self.notify.notified();
+        let _ = tokio::time::timeout(timeout, notified).await;
+        self.read_new_available(stream, group, consumer, count)
+            .await
+    }
+
+    async fn ack(&self, stream: &str, group: &str, message_id: &str) -> Result<(), EventBusError> {
+        let mut state = self.state.lock().await;
+        if let Some(stream_state) = state.streams.get_mut(stream) {
+            if let Some(group_state) = stream_state.groups.get_mut(group) {
+                group_state.pending.remove(message_id);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl MemoryStreamBackend {
+    async fn read_new_available(
         &self,
         stream: &str,
         group: &str,
@@ -233,7 +272,7 @@ impl StreamBackend for MemoryStreamBackend {
                 message: entry.message,
                 state: DeliveryState {
                     attempt,
-                    max_attempt: attempt,
+                    max_attempt: 0, // filled by bus layer from SubscriptionConfig
                     first_received: now,
                     last_received: now,
                     redelivered: false,
@@ -242,27 +281,6 @@ impl StreamBackend for MemoryStreamBackend {
         }
 
         Ok(claimed)
-    }
-
-    async fn ack(
-        &self,
-        stream: &str,
-        group: &str,
-        message_id: &str,
-    ) -> Result<(), EventBusError> {
-        let mut state = self.state.lock().await;
-        if let Some(stream_state) = state.streams.get_mut(stream) {
-            if let Some(group_state) = stream_state.groups.get_mut(group) {
-                group_state.pending.remove(message_id);
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn wait_for_messages(&self, timeout: Duration) {
-        let notified = self.notify.notified();
-        let _ = tokio::time::timeout(timeout, notified).await;
     }
 }
 

@@ -1,44 +1,44 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use crate::{
     Delivery, DeliveryInspector, DeliveryState, EventBusError, Message, SubscriptionConfig,
+    HEADER_DEAD_LETTER_REASON, HEADER_RETRY_ATTEMPT, HEADER_RETRY_REASON,
 };
 
-use super::backend::{SharedBackend, StreamBackend};
-
-const HEADER_RETRY_ATTEMPT: &str = "retry-attempt";
-const HEADER_RETRY_REASON: &str = "retry-reason";
-const HEADER_DEAD_LETTER_REASON: &str = "dead-letter-reason";
+use super::{
+    backend::{SharedBackend, StreamBackend},
+    bus::PendingAckTracker,
+};
 
 pub(super) struct RedisStreamDelivery<B: StreamBackend> {
     backend: SharedBackend<B>,
-    stream: String,
-    group: String,
     message_id: String,
     message: Message,
     state: DeliveryState,
     config: SubscriptionConfig,
+    pending_ack_tracker: Arc<PendingAckTracker>,
     finalized: AtomicBool,
 }
 
 impl<B: StreamBackend> RedisStreamDelivery<B> {
     pub(super) fn new(
         backend: SharedBackend<B>,
-        stream: String,
-        group: String,
         message_id: String,
         message: Message,
         state: DeliveryState,
         config: SubscriptionConfig,
+        pending_ack_tracker: Arc<PendingAckTracker>,
     ) -> Self {
         Self {
             backend,
-            stream,
-            group,
             message_id,
             message,
             state,
             config,
+            pending_ack_tracker,
             finalized: AtomicBool::new(false),
         }
     }
@@ -49,7 +49,11 @@ impl<B: StreamBackend> RedisStreamDelivery<B> {
 
     async fn mark_acked(&self) -> Result<(), EventBusError> {
         self.backend
-            .ack(&self.stream, &self.group, &self.message_id)
+            .ack(
+                &self.config.topic,
+                &self.config.consumer_group,
+                &self.message_id,
+            )
             .await
     }
 
@@ -98,6 +102,7 @@ impl<B: StreamBackend> Delivery for RedisStreamDelivery<B> {
             return Err(err);
         }
 
+        self.pending_ack_tracker.release(&self.message_id).await;
         Ok(())
     }
 
@@ -119,6 +124,7 @@ impl<B: StreamBackend> Delivery for RedisStreamDelivery<B> {
             return Err(err);
         }
 
+        self.pending_ack_tracker.release(&self.message_id).await;
         Ok(())
     }
 
@@ -130,8 +136,7 @@ impl<B: StreamBackend> Delivery for RedisStreamDelivery<B> {
             return Ok(());
         }
 
-        let retry_exhausted = self.config.max_retry == 0
-            || self.state.attempt as usize >= self.config.max_retry;
+        let retry_exhausted = self.state.attempt >= self.state.max_attempt;
 
         if retry_exhausted {
             if let Err(err) = self.publish_dead_letter(&reason.to_string()).await {
@@ -140,14 +145,15 @@ impl<B: StreamBackend> Delivery for RedisStreamDelivery<B> {
             }
         } else {
             let mut retried = self.message.clone();
-            retried
-                .headers
-                .insert(HEADER_RETRY_ATTEMPT.to_string(), self.state.attempt.to_string());
+            retried.headers.insert(
+                HEADER_RETRY_ATTEMPT.to_string(),
+                self.state.attempt.to_string(),
+            );
             retried
                 .headers
                 .insert(HEADER_RETRY_REASON.to_string(), reason.to_string());
 
-            if let Err(err) = self.backend.publish(&self.stream, retried).await {
+            if let Err(err) = self.backend.publish(&self.config.topic, retried).await {
                 self.reset_finalize();
                 return Err(err);
             }
@@ -158,6 +164,7 @@ impl<B: StreamBackend> Delivery for RedisStreamDelivery<B> {
             return Err(err);
         }
 
+        self.pending_ack_tracker.release(&self.message_id).await;
         Ok(())
     }
 }

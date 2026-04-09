@@ -1,8 +1,8 @@
 use crate::error::EventBusError;
-use crate::eventbus::{Message, Topic};
+use crate::eventbus::Message;
 
 pub trait IntegrationEvent: Send + Sync {
-    fn event_topic(&self) -> &Topic;
+    fn event_topic(&self) -> &str;
     fn event_key(&self) -> &str;
     fn event_kind(&self) -> &str;
 }

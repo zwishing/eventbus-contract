@@ -100,6 +100,16 @@ impl BackpressurePolicy {
                 "max batch size must be > 0".into(),
             ));
         }
+        if self.max_batch_size > self.max_in_flight {
+            return Err(EventBusError::Validation(
+                "max batch size must be <= max in flight".into(),
+            ));
+        }
+        if self.max_batch_size > self.max_pending_acks {
+            return Err(EventBusError::Validation(
+                "max batch size must be <= max pending acks".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -219,6 +229,17 @@ mod tests {
             max_in_flight: 10,
             max_pending_acks: 5,
             max_batch_size: 1,
+            overflow_strategy: OverflowStrategy::Reject,
+        };
+        assert!(policy.validate().is_err());
+    }
+
+    #[test]
+    fn backpressure_rejects_batch_larger_than_in_flight() {
+        let policy = BackpressurePolicy {
+            max_in_flight: 4,
+            max_pending_acks: 8,
+            max_batch_size: 5,
             overflow_strategy: OverflowStrategy::Reject,
         };
         assert!(policy.validate().is_err());

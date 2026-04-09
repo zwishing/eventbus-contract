@@ -66,8 +66,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Connect
     // -----------------------------------------------------------------------
 
-    let redis_url = std::env::var("REDIS_URL")
-        .unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
 
     println!("[main] connecting to {redis_url}");
     let client = redis::Client::open(redis_url.as_str())?;
@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 topic: "demo.events".to_string(),
                 consumer_group: "demo-consumers".to_string(),
                 consumer_name: "worker-1".to_string(),
-                ack_mode: Some(AckMode::Manual),
+                ack_mode: AckMode::Manual,
                 max_retry: 3,
                 dead_letter_topic: Some("demo.events.dlq".to_string()),
                 concurrency: 1,

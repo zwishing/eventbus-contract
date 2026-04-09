@@ -2,7 +2,7 @@
 //!
 //! Shows horizontal scaling within a single consumer group:
 //!
-//! - `concurrency: N` spawns N worker threads, each polling the same stream
+//! - `concurrency: N` allows up to N handler tasks to run concurrently
 //! - All workers share the same consumer group — each message is processed
 //!   by exactly one worker (competing/queue semantics)
 //! - The order of delivery across workers is not guaranteed
@@ -20,7 +20,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use eventbus_contract::redis_stream::{MemoryStreamBackend, RedisStreamBus, RedisStreamBusOptions};
-use eventbus_contract::{Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig};
+use eventbus_contract::{
+    AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig,
+};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -65,24 +67,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let processed = Arc::new(AtomicUsize::new(0));
     let (tx, mut rx) = mpsc::channel(MESSAGE_COUNT);
 
-    // Subscribe with concurrency=3: three worker threads, same consumer group.
-    // Each message will be handled by exactly one of the three workers.
+    // Subscribe with concurrency=3: the bus may run up to three handler tasks
+    // concurrently while sharing the same consumer group.
     let sub = bus
         .subscribe(
             SubscriptionConfig {
                 topic: "job.created".to_string(),
                 consumer_group: "job-processor".to_string(),
                 // consumer_name is used as a prefix when concurrency > 1:
-                // workers are named "processor-0", "processor-1", "processor-2"
+                // the Redis consumer identity remains stable for this subscriber
                 consumer_name: "processor".to_string(),
                 concurrency: WORKER_COUNT,
-                auto_ack: false, // we call ack() explicitly in the handler
+                ack_mode: AckMode::Manual,
                 ..Default::default()
             },
             WorkerHandler {
                 worker_id: 0, // all workers share the same handler type; worker_id
-                              // is illustrative — in practice you'd use thread-local
-                              // context or instrument with tracing spans
+                // is illustrative — in practice you'd use thread-local
+                // context or instrument with tracing spans
                 processed: Arc::clone(&processed),
                 tx,
             },
@@ -128,7 +130,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     assert_eq!(receipts.len(), MESSAGE_COUNT);
-    assert_eq!(backend.pending_count("job.created", "job-processor").await, 0);
+    assert_eq!(
+        backend.pending_count("job.created", "job-processor").await,
+        0
+    );
     println!("\n[main] pending=0, all messages processed ✓");
 
     sub.close().await?;

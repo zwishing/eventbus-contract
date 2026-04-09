@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
 use std::time::Duration;
 
 use crate::contract::{
@@ -127,15 +128,13 @@ impl PublishOptions {
             return Err(EventBusError::Validation("ordered key is required".into()));
         }
 
-        if let (Some(DeliveryGuarantee::ExactlyOnce), Some(confirmation)) =
-            (self.guarantee, self.confirmation)
+        if self.guarantee == Some(DeliveryGuarantee::ExactlyOnce)
+            && self.confirmation != Some(PublishConfirmation::Persisted)
         {
-            if confirmation != PublishConfirmation::Persisted {
-                return Err(EventBusError::Validation(format!(
-                    "exactly-once requires {:?} confirmation",
-                    PublishConfirmation::Persisted,
-                )));
-            }
+            return Err(EventBusError::Validation(format!(
+                "exactly-once requires {:?} confirmation",
+                PublishConfirmation::Persisted,
+            )));
         }
 
         if let Some(ref bp) = self.backpressure {
@@ -165,8 +164,7 @@ pub struct SubscriptionConfig {
     pub max_retry: usize,
     pub retry_backoff: Duration,
     pub dead_letter_topic: Option<Topic>,
-    pub auto_ack: bool,
-    pub ack_mode: Option<AckMode>,
+    pub ack_mode: AckMode,
     pub ordering_mode: Option<OrderingMode>,
     pub balance_mode: Option<ConsumerBalanceMode>,
     pub guarantee: Option<DeliveryGuarantee>,
@@ -186,8 +184,7 @@ impl Default for SubscriptionConfig {
             max_retry: 0,
             retry_backoff: Duration::ZERO,
             dead_letter_topic: None,
-            auto_ack: false,
-            ack_mode: None,
+            ack_mode: AckMode::Manual,
             ordering_mode: None,
             balance_mode: None,
             guarantee: None,
@@ -202,14 +199,6 @@ impl Default for SubscriptionConfig {
 impl SubscriptionConfig {
     /// Fill in zero-value fields with sensible defaults.
     pub fn apply_defaults(&mut self) {
-        if self.ack_mode.is_none() {
-            self.ack_mode = Some(if self.auto_ack {
-                AckMode::AutoOnHandlerSuccess
-            } else {
-                AckMode::Manual
-            });
-        }
-
         if self.ordering_mode.is_none() {
             self.ordering_mode = Some(OrderingMode::None);
         }
@@ -258,16 +247,6 @@ impl SubscriptionConfig {
     /// Check config consistency without mutating fields.
     /// Call `apply_defaults` first, or use `normalize_and_validate`.
     pub fn validate(&self) -> Result<(), EventBusError> {
-        let ack_mode = self
-            .ack_mode
-            .ok_or_else(|| EventBusError::Validation("ack mode is required".into()))?;
-
-        if self.auto_ack && ack_mode == AckMode::Manual {
-            return Err(EventBusError::Validation(
-                "auto ack cannot be used with manual ack mode".into(),
-            ));
-        }
-
         if self.ordering_mode.is_none() {
             return Err(EventBusError::Validation(
                 "ordering mode is required".into(),
@@ -320,19 +299,19 @@ impl SubscriptionConfig {
 
 pub trait Delivery: DeliveryInspector + Send + Sync {
     fn message(&self) -> &Message;
-    async fn ack(&self) -> Result<(), EventBusError>;
-    async fn nack(
+    fn ack(&self) -> impl Future<Output = Result<(), EventBusError>> + Send;
+    fn nack(
         &self,
         reason: &(dyn std::error::Error + Send + Sync),
-    ) -> Result<(), EventBusError>;
-    async fn retry(
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
+    fn retry(
         &self,
         reason: &(dyn std::error::Error + Send + Sync),
-    ) -> Result<(), EventBusError>;
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 }
 
 pub trait Handler: Send + Sync {
-    async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
+    fn handle<D>(&self, delivery: &D) -> impl Future<Output = Result<(), EventBusError>> + Send
     where
         D: Delivery + Send + Sync;
 }
@@ -421,6 +400,12 @@ mod tests {
     }
 
     #[test]
+    fn publish_options_rejects_exactly_once_without_confirmation() {
+        let opts = PublishOptions::new().with_guarantee(DeliveryGuarantee::ExactlyOnce);
+        assert!(opts.validate().is_err());
+    }
+
+    #[test]
     fn publish_options_rejects_zero_ttl() {
         let opts = PublishOptions::new().with_topic_ttl(Duration::ZERO);
         assert!(opts.validate().is_err());
@@ -429,29 +414,28 @@ mod tests {
     #[test]
     fn subscription_config_derives_ack_mode_from_auto_ack() {
         let mut cfg = SubscriptionConfig {
-            auto_ack: true,
+            ack_mode: AckMode::AutoOnHandlerSuccess,
             max_in_flight: 8,
             ..Default::default()
         };
         assert!(cfg.normalize_and_validate().is_ok());
-        assert_eq!(cfg.ack_mode, Some(AckMode::AutoOnHandlerSuccess));
+        assert_eq!(cfg.ack_mode, AckMode::AutoOnHandlerSuccess);
     }
 
     #[test]
-    fn subscription_config_rejects_conflicting_auto_ack() {
+    fn subscription_config_defaults_to_manual_ack() {
         let mut cfg = SubscriptionConfig {
-            auto_ack: true,
-            ack_mode: Some(AckMode::Manual),
             max_in_flight: 8,
             ..Default::default()
         };
-        assert!(cfg.normalize_and_validate().is_err());
+        assert!(cfg.normalize_and_validate().is_ok());
+        assert_eq!(cfg.ack_mode, AckMode::Manual);
     }
 
     #[test]
     fn subscription_config_rejects_conflicting_backpressure() {
         let mut cfg = SubscriptionConfig {
-            ack_mode: Some(AckMode::Manual),
+            ack_mode: AckMode::Manual,
             max_in_flight: 8,
             backpressure: Some(BackpressurePolicy {
                 max_in_flight: 16,

@@ -37,15 +37,7 @@ pub struct IdempotencyClaim {
 pub trait IdempotencyClaimStore: Send + Sync {
     async fn claim(&self, claim: IdempotencyClaim) -> Result<bool, EventBusError>;
 
-    async fn complete(
-        &self,
-        consumer_group: &str,
-        message_uid: &str,
-    ) -> Result<(), EventBusError>;
+    async fn complete(&self, consumer_group: &str, message_uid: &str) -> Result<(), EventBusError>;
 
-    async fn release(
-        &self,
-        consumer_group: &str,
-        message_uid: &str,
-    ) -> Result<(), EventBusError>;
+    async fn release(&self, consumer_group: &str, message_uid: &str) -> Result<(), EventBusError>;
 }

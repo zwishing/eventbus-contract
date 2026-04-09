@@ -33,13 +33,14 @@ pub use eventbus::{
 pub use idempotency::{IdempotencyClaim, IdempotencyClaimStore, IdempotencyStore};
 pub use integration::{EventPublisher, IntegrationEvent, MessageFactory};
 pub use message_contract::{
-    SchemaDescriptor, TraceContext, HEADER_BAGGAGE, HEADER_CONTENT_TYPE, HEADER_EVENT_VERSION,
-    HEADER_IDEMPOTENCY_KEY, HEADER_TRACE_PARENT, HEADER_TRACE_STATE,
+    SchemaDescriptor, TraceContext, HEADER_BAGGAGE, HEADER_CONTENT_TYPE,
+    HEADER_DEAD_LETTER_REASON, HEADER_EVENT_VERSION, HEADER_IDEMPOTENCY_KEY,
+    HEADER_RETRY_ATTEMPT, HEADER_RETRY_REASON, HEADER_TRACE_PARENT, HEADER_TRACE_STATE,
 };
 pub use outbox::{
     AppendRequest, DeadLetterMessageRecord, OutboxMessageRecord, OutboxRecord, OutboxStatus,
     OutboxStore, Repository,
 };
-pub use redis_stream::{MemoryStreamBackend, RedisStreamBus, RedisStreamBusOptions};
 #[cfg(feature = "redis-backend")]
 pub use redis_stream::RedisBackend;
+pub use redis_stream::{MemoryStreamBackend, RedisStreamBus, RedisStreamBusOptions};

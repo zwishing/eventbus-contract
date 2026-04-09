@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 
 use crate::error::EventBusError;
 
@@ -22,7 +23,7 @@ pub struct DeliveryState {
 }
 
 pub trait DeliveryInspector: Send + Sync {
-    async fn state(&self) -> Result<DeliveryState, EventBusError>;
+    fn state(&self) -> impl Future<Output = Result<DeliveryState, EventBusError>> + Send;
 }
 
 #[cfg(test)]
@@ -31,9 +32,18 @@ mod tests {
 
     #[test]
     fn delivery_outcome_uses_go_wire_names() {
-        assert_eq!(serde_json::to_string(&DeliveryOutcome::Acked).unwrap(), "\"acked\"");
-        assert_eq!(serde_json::to_string(&DeliveryOutcome::Nacked).unwrap(), "\"nacked\"");
-        assert_eq!(serde_json::to_string(&DeliveryOutcome::Retried).unwrap(), "\"retried\"");
+        assert_eq!(
+            serde_json::to_string(&DeliveryOutcome::Acked).unwrap(),
+            "\"acked\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeliveryOutcome::Nacked).unwrap(),
+            "\"nacked\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DeliveryOutcome::Retried).unwrap(),
+            "\"retried\""
+        );
         assert_eq!(
             serde_json::to_string(&DeliveryOutcome::DeadLetter).unwrap(),
             "\"dead-letter\"",

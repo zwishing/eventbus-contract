@@ -18,7 +18,7 @@ eventbus-contract = { path = ".", features = ["redis-backend"] }
 ```rust
 use std::sync::Arc;
 use eventbus_contract::redis_stream::{MemoryStreamBackend, RedisStreamBus, RedisStreamBusOptions};
-use eventbus_contract::{Delivery, EventBusError, Handler, Message, PublishOptions, SubscriptionConfig};
+use eventbus_contract::{AckMode, Delivery, EventBusError, Handler, Message, PublishOptions, SubscriptionConfig};
 
 struct MyHandler;
 
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             topic: "my.topic".to_string(),
             consumer_group: "my-service".to_string(),
             consumer_name: "worker-1".to_string(),
-            auto_ack: true,
+            ack_mode: AckMode::AutoOnHandlerSuccess,
             concurrency: 1,
             ..Default::default()
         },
@@ -83,15 +83,33 @@ SubscriptionConfig {
 
 - `max_retry = 0` → no retries; first call to `retry()` goes directly to DLQ.
 - Without a `dead_letter_topic`, exhausted messages are silently dropped.
+- Retry exhaustion is checked against `DeliveryState::max_attempt` (set from
+  `SubscriptionConfig::max_retry` by the bus layer), keeping retry logic
+  self-contained in the delivery.
+
+## Error handling
+
+Infrastructure errors (e.g. Redis `ACK` failure) do **not** kill the consumer
+loop. The unacknowledged message stays in the Redis PEL and will be reclaimed
+by the next idle-claim scan. Errors are **collected** and surfaced when
+`Subscription::close()` is called:
+
+```rust
+let err = sub.close().await;   // Ok(()) on clean shutdown, Err(...) if any delivery failed
+```
+
+Task panics are treated differently — they propagate immediately since they
+indicate programming bugs.
 
 ## Competing consumers (horizontal scaling)
 
-Set `concurrency > 1` to spawn multiple worker threads sharing the same
-consumer group. Each message is delivered to exactly one worker.
+Set `concurrency > 1` to allow multiple handler tasks to process messages
+concurrently within the same consumer group. Each message is delivered to
+exactly one handler execution.
 
 ```rust
 SubscriptionConfig {
-    consumer_name: "processor".to_string(), // workers named processor-0, processor-1, …
+    consumer_name: "processor".to_string(), // stable consumer identity for this subscriber
     concurrency: 4,
     ..Default::default()
 }
@@ -130,11 +148,27 @@ let bus = RedisStreamBus::from_connection(conn, RedisStreamBusOptions::default()
 | `claim_scan_batch_size` | 64 | Max messages to reclaim per scan cycle |
 | `group_start_id` | `"$"` | Stream offset for new consumer groups (`"0"` = from beginning) |
 
+## Well-known headers
+
+Standard header key constants are exported from the crate root:
+
+| Constant | Header key | Purpose |
+|----------|-----------|---------|
+| `HEADER_RETRY_ATTEMPT` | `retry-attempt` | Current retry attempt number (set on retry) |
+| `HEADER_RETRY_REASON` | `retry-reason` | Reason for retry (set on retry) |
+| `HEADER_DEAD_LETTER_REASON` | `dead-letter-reason` | Reason message was dead-lettered |
+| `HEADER_IDEMPOTENCY_KEY` | `idempotency-key` | Deduplication key |
+| `HEADER_TRACE_PARENT` | `traceparent` | W3C trace parent |
+| `HEADER_TRACE_STATE` | `tracestate` | W3C trace state |
+| `HEADER_BAGGAGE` | `baggage` | W3C baggage |
+| `HEADER_CONTENT_TYPE` | `content-type` | Payload content type |
+| `HEADER_EVENT_VERSION` | `event-version` | Schema version |
+
 ## Examples
 
 | Example | What it shows |
 |---------|---------------|
-| [`01_basic_pubsub`](examples/01_basic_pubsub.rs) | Minimal publish + subscribe with `auto_ack` |
+| [`01_basic_pubsub`](examples/01_basic_pubsub.rs) | Minimal publish + subscribe with automatic ack-on-success |
 | [`02_manual_ack_and_retry`](examples/02_manual_ack_and_retry.rs) | Explicit `ack` / `retry` / `nack`, dead-letter routing |
 | [`03_competing_consumers`](examples/03_competing_consumers.rs) | Concurrent workers, competing-consumer semantics |
 | [`04_redis_backend`](examples/04_redis_backend.rs) | Real Redis connection (`--features redis-backend`) |
@@ -168,16 +202,16 @@ cargo fmt
 
 ```
 src/
-├── eventbus/       Core traits: Publisher, Subscriber, Handler, Delivery, Bus, Codec
-├── contract/       Value objects: DeliveryGuarantee, AckMode, BackpressurePolicy, …
-├── redis_stream/   RedisStreamBus<B: StreamBackend> + MemoryStreamBackend + RedisBackend
-├── outbox/         OutboxStore trait + OutboxStatus state machine (transactional outbox)
-├── idempotency/    IdempotencyStore (dedup) + IdempotencyClaimStore (lease-based dedup)
-├── integration/    IntegrationEvent + MessageFactory + EventPublisher (DDD helpers)
-├── dispatcher/     Dispatcher / Notifier / Listener traits (outbox-relay workers)
-├── message_contract/ Standard header constants + TraceContext + SchemaDescriptor
+├── eventbus/         Core traits: Publisher, Subscriber, Handler, Delivery, Bus, Codec
+├── contract/         Value objects: DeliveryGuarantee, AckMode, BackpressurePolicy, …
+├── redis_stream/     RedisStreamBus<B: StreamBackend> + MemoryStreamBackend + RedisBackend
+├── outbox/           OutboxStore trait + OutboxStatus state machine (transactional outbox)
+├── idempotency/      IdempotencyStore (dedup) + IdempotencyClaimStore (lease-based dedup)
+├── integration/      IntegrationEvent + MessageFactory + EventPublisher (DDD helpers)
+├── dispatcher/       Dispatcher / Notifier / Listener traits (outbox-relay workers)
+├── message_contract/ Header constants + TraceContext + SchemaDescriptor
 ├── delivery_contract/ DeliveryInspector + DeliveryOutcome + DeliveryState
-└── consumer/       ConsumerMessageRecord
+└── consumer/         ConsumerMessageRecord
 ```
 
 `Message` is the canonical envelope shared by all layers. `SubscriptionConfig`

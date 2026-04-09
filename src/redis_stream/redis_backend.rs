@@ -9,7 +9,8 @@
 //! serialised as JSON inside a `{"message": ...}` envelope stored in the
 //! `"message"` field of each Redis Stream entry.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -17,13 +18,12 @@ use redis::aio::MultiplexedConnection;
 use redis::streams::{StreamId, StreamRangeReply, StreamReadReply};
 use redis::{FromRedisValue, Value};
 
-use crate::{DeliveryState, EventBusError, Message};
+use crate::{DeliveryState, EventBusError, Message, HEADER_RETRY_ATTEMPT};
 
 use super::backend::{ClaimedMessage, StreamBackend};
 use super::bus::{RedisStreamBus, RedisStreamBusOptions};
 
 const REDIS_FIELD_MESSAGE: &str = "message";
-const HEADER_RETRY_ATTEMPT: &str = "retry-attempt";
 
 /// JSON envelope matching Go's `redisStreamPayload`.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -54,11 +54,15 @@ struct Payload {
 /// ```
 pub struct RedisBackend {
     conn: MultiplexedConnection,
+    reclaim_starts: Mutex<HashMap<String, String>>,
 }
 
 impl RedisBackend {
     pub fn new(conn: MultiplexedConnection) -> Self {
-        Self { conn }
+        Self {
+            conn,
+            reclaim_starts: Mutex::new(HashMap::new()),
+        }
     }
 }
 
@@ -134,6 +138,14 @@ impl StreamBackend for RedisBackend {
         count: usize,
     ) -> Result<Vec<ClaimedMessage>, EventBusError> {
         let mut conn = self.conn.clone();
+        let cursor_key = format!("{stream}:{group}:{consumer}");
+        let start = self
+            .reclaim_starts
+            .lock()
+            .map_err(|_| EventBusError::Internal("reclaim cursor mutex poisoned".into()))?
+            .get(&cursor_key)
+            .cloned()
+            .unwrap_or_else(|| "0-0".to_string());
 
         // XAUTOCLAIM <stream> <group> <consumer> <min-idle-ms> <start> COUNT <n>
         let raw: Value = redis::cmd("XAUTOCLAIM")
@@ -141,14 +153,19 @@ impl StreamBackend for RedisBackend {
             .arg(group)
             .arg(consumer)
             .arg(min_idle.as_millis() as u64)
-            .arg("0-0")
+            .arg(&start)
             .arg("COUNT")
             .arg(count)
             .query_async(&mut conn)
             .await
             .map_err(|e| EventBusError::Connection(format!("xautoclaim on {stream}: {e}")))?;
 
-        parse_autoclaim(raw)
+        let (next_start, claimed) = parse_autoclaim(raw)?;
+        self.reclaim_starts
+            .lock()
+            .map_err(|_| EventBusError::Internal("reclaim cursor mutex poisoned".into()))?
+            .insert(cursor_key, next_start);
+        Ok(claimed)
     }
 
     async fn read_new(
@@ -157,16 +174,18 @@ impl StreamBackend for RedisBackend {
         group: &str,
         consumer: &str,
         count: usize,
+        timeout: Duration,
     ) -> Result<Vec<ClaimedMessage>, EventBusError> {
         let mut conn = self.conn.clone();
 
-        // XREADGROUP without BLOCK returns immediately.
         let result: Result<StreamReadReply, _> = redis::cmd("XREADGROUP")
             .arg("GROUP")
             .arg(group)
             .arg(consumer)
             .arg("COUNT")
             .arg(count)
+            .arg("BLOCK")
+            .arg(timeout.as_millis() as u64)
             .arg("STREAMS")
             .arg(stream)
             .arg(">")
@@ -184,20 +203,15 @@ impl StreamBackend for RedisBackend {
             }
         };
 
-        Ok(reply
+        reply
             .keys
             .iter()
             .flat_map(|k| k.ids.iter())
-            .filter_map(|entry| decode_entry(entry, false).ok())
-            .collect())
+            .map(|entry| decode_entry(entry, false))
+            .collect::<Result<Vec<_>, _>>()
     }
 
-    async fn ack(
-        &self,
-        stream: &str,
-        group: &str,
-        message_id: &str,
-    ) -> Result<(), EventBusError> {
+    async fn ack(&self, stream: &str, group: &str, message_id: &str) -> Result<(), EventBusError> {
         let mut conn = self.conn.clone();
         let _: i64 = redis::cmd("XACK")
             .arg(stream)
@@ -208,10 +222,6 @@ impl StreamBackend for RedisBackend {
             .map_err(|e| EventBusError::Connection(format!("xack {message_id}: {e}")))?;
         Ok(())
     }
-
-    async fn wait_for_messages(&self, timeout: Duration) {
-        tokio::time::sleep(timeout).await;
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +231,10 @@ impl StreamBackend for RedisBackend {
 /// Decode a single Redis Stream entry (`StreamId`) into a `ClaimedMessage`.
 fn decode_entry(entry: &StreamId, redelivered: bool) -> Result<ClaimedMessage, EventBusError> {
     let val = entry.map.get(REDIS_FIELD_MESSAGE).ok_or_else(|| {
-        EventBusError::Serialization(format!("entry {} missing '{REDIS_FIELD_MESSAGE}'", entry.id))
+        EventBusError::Serialization(format!(
+            "entry {} missing '{REDIS_FIELD_MESSAGE}'",
+            entry.id
+        ))
     })?;
 
     let json: String = FromRedisValue::from_redis_value(val.clone())
@@ -249,24 +262,30 @@ fn decode_entry(entry: &StreamId, redelivered: bool) -> Result<ClaimedMessage, E
 /// Parse the raw `XAUTOCLAIM` response into claimed messages.
 ///
 /// Response shape: `[next-start-id, [entries...], [deleted-ids...]]`
-fn parse_autoclaim(raw: Value) -> Result<Vec<ClaimedMessage>, EventBusError> {
+fn parse_autoclaim(raw: Value) -> Result<(String, Vec<ClaimedMessage>), EventBusError> {
     let items = match raw {
         Value::Array(v) if v.len() >= 2 => v,
-        Value::Nil => return Ok(Vec::new()),
-        _ => return Ok(Vec::new()),
+        Value::Nil => return Ok(("0-0".to_string(), Vec::new())),
+        _ => {
+            return Err(EventBusError::Serialization(
+                "unexpected XAUTOCLAIM response".into(),
+            ))
+        }
     };
+    let next_start: String = FromRedisValue::from_redis_value(items[0].clone())
+        .map_err(|err| EventBusError::Serialization(format!("decode XAUTOCLAIM cursor: {err}")))?;
 
     // items[1] has the same format as XRANGE output → parse as StreamRangeReply.
-    let range: StreamRangeReply = match FromRedisValue::from_redis_value(items[1].clone()) {
-        Ok(r) => r,
-        Err(_) => return Ok(Vec::new()),
-    };
+    let range: StreamRangeReply = FromRedisValue::from_redis_value(items[1].clone())
+        .map_err(|err| EventBusError::Serialization(format!("decode XAUTOCLAIM entries: {err}")))?;
 
-    Ok(range
+    let claimed = range
         .ids
         .iter()
-        .filter_map(|entry| decode_entry(entry, true).ok())
-        .collect())
+        .map(|entry| decode_entry(entry, true))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok((next_start, claimed))
 }
 
 fn retry_attempt(msg: &Message) -> u32 {
@@ -281,10 +300,10 @@ fn is_busygroup(err: &redis::RedisError) -> bool {
     err.to_string().contains("BUSYGROUP")
 }
 
-/// When XREADGROUP has no new messages Redis returns nil, which causes
-/// an `UnexpectedReturnType` error during deserialization.
+/// When XREADGROUP has no new messages Redis returns nil, which surfaces as
+/// either a nil value or an `UnexpectedReturnType` deserialization error.
 fn is_nil_response(err: &redis::RedisError) -> bool {
-    matches!(err.kind(), redis::ErrorKind::UnexpectedReturnType)
+    err.is_nil() || matches!(err.kind(), redis::ErrorKind::UnexpectedReturnType)
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +312,8 @@ fn is_nil_response(err: &redis::RedisError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     fn assert_stream_backend<T: StreamBackend>() {}
@@ -300,5 +321,77 @@ mod tests {
     #[test]
     fn redis_backend_implements_stream_backend() {
         assert_stream_backend::<RedisBackend>();
+    }
+
+    #[test]
+    fn decode_entry_reports_invalid_payload() {
+        let entry = StreamId {
+            id: "1-0".into(),
+            map: HashMap::from([(
+                REDIS_FIELD_MESSAGE.into(),
+                Value::BulkString(b"not-json".to_vec()),
+            )]),
+            milliseconds_elapsed_from_delivery: None,
+            delivered_count: None,
+        };
+
+        assert!(decode_entry(&entry, false).is_err());
+    }
+
+    #[test]
+    fn parse_autoclaim_reports_invalid_entry_payload() {
+        let raw = Value::Array(vec![
+            Value::BulkString(b"0-0".to_vec()),
+            Value::Array(vec![Value::Array(vec![
+                Value::BulkString(b"1-0".to_vec()),
+                Value::Array(vec![
+                    Value::BulkString(REDIS_FIELD_MESSAGE.as_bytes().to_vec()),
+                    Value::BulkString(b"not-json".to_vec()),
+                ]),
+            ])]),
+            Value::Array(vec![]),
+        ]);
+
+        assert!(parse_autoclaim(raw).is_err());
+    }
+
+    #[test]
+    fn parse_autoclaim_returns_next_cursor_and_entries() {
+        let json = serde_json::to_string(&Payload {
+            message: Message {
+                uid: "msg-1".into(),
+                topic: "orders.created".into(),
+                key: "order-1".into(),
+                kind: "orders.created".into(),
+                source: "tests".into(),
+                occurred_at: Utc::now(),
+                headers: HashMap::new(),
+                payload: vec![],
+                content_type: None,
+                event_version: None,
+                idempotency_key: None,
+                expires_at: None,
+                trace_uid: None,
+                correlation_uid: None,
+            },
+        })
+        .expect("serialize payload");
+        let raw = Value::Array(vec![
+            Value::BulkString(b"42-0".to_vec()),
+            Value::Array(vec![Value::Array(vec![
+                Value::BulkString(b"1-0".to_vec()),
+                Value::Array(vec![
+                    Value::BulkString(REDIS_FIELD_MESSAGE.as_bytes().to_vec()),
+                    Value::BulkString(json.into_bytes()),
+                ]),
+            ])]),
+            Value::Array(vec![]),
+        ]);
+
+        let (cursor, claimed) = parse_autoclaim(raw).expect("parse xautoclaim");
+
+        assert_eq!(cursor, "42-0");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].id, "1-0");
     }
 }

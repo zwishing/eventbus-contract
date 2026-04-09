@@ -1,8 +1,10 @@
-use std::{sync::Arc, thread::JoinHandle, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::Utc;
-
-use tokio::sync::watch;
+use tokio::{
+    sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore},
+    task::JoinSet,
+};
 
 use crate::{
     AckMode, Delivery, EventBusError, Handler, Message, PublishOptions, Publisher, Subscriber,
@@ -14,6 +16,51 @@ use super::{
     delivery::RedisStreamDelivery,
     subscription::RedisStreamSubscription,
 };
+
+const PUBLISH_BATCH_PARALLELISM: usize = 32;
+
+type DeliveryTaskResult = Result<(), EventBusError>;
+
+#[derive(Debug)]
+pub(super) struct PendingAckTracker {
+    permits: Arc<Semaphore>,
+    permits_by_message: Mutex<HashMap<String, OwnedSemaphorePermit>>,
+}
+
+impl PendingAckTracker {
+    fn new(limit: usize) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(limit)),
+            permits_by_message: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn available_permits(&self) -> usize {
+        self.permits.available_permits()
+    }
+
+    async fn track_new(&self, message_id: String) -> Result<(), EventBusError> {
+        let permit =
+            self.permits.clone().acquire_owned().await.map_err(|err| {
+                EventBusError::Internal(format!("pending ack tracker closed: {err}"))
+            })?;
+        self.permits_by_message
+            .lock()
+            .await
+            .insert(message_id, permit);
+        Ok(())
+    }
+
+    pub(super) async fn release(&self, message_id: &str) {
+        self.permits_by_message.lock().await.remove(message_id);
+    }
+}
+
+struct RuntimeState<H> {
+    handler: Arc<H>,
+    in_flight_limiter: Arc<Semaphore>,
+    pending_ack_tracker: Arc<PendingAckTracker>,
+}
 
 #[derive(Debug, Clone)]
 pub struct RedisStreamBusOptions {
@@ -145,65 +192,91 @@ impl<B: StreamBackend> RedisStreamBus<B> {
     async fn consume_loop<H>(
         self,
         config: SubscriptionConfig,
-        handler: Arc<H>,
         mut close_rx: watch::Receiver<bool>,
-        consumer_name: String,
-    ) where
+        runtime: RuntimeState<H>,
+    ) -> Result<(), EventBusError>
+    where
         H: Handler + Send + Sync + 'static,
     {
+        let mut tasks = JoinSet::new();
+        // Delivery infrastructure errors (e.g. ack failure) do not kill the consumer
+        // loop — the message remains in the PEL and will be re-claimed.  We collect
+        // the first such error here and surface it when the subscription closes.
+        let mut first_delivery_error: Option<EventBusError> = None;
+
         loop {
             if *close_rx.borrow() {
                 break;
             }
 
-            match self
-                .backend
-                .reclaim_idle(
-                    &config.topic,
-                    &config.consumer_group,
-                    &consumer_name,
-                    self.options.claim_idle_timeout,
-                    self.options.claim_scan_batch_size,
-                )
-                .await
-            {
-                Ok(messages) => {
-                    if self
-                        .process_claimed_messages(&config, &handler, messages, true)
-                        .await
-                        .is_err()
-                    {
+            self.drain_completed_tasks(&mut tasks, &mut first_delivery_error).await?;
+
+            let available_in_flight = runtime.in_flight_limiter.available_permits();
+            if available_in_flight == 0 {
+                if !wait_for_task_or_close(&mut tasks, &mut close_rx, config.retry_backoff).await? {
+                    break;
+                }
+                continue;
+            }
+
+            let reclaim_limit = available_in_flight.min(self.options.claim_scan_batch_size);
+            if reclaim_limit > 0 {
+                match self
+                    .backend
+                    .reclaim_idle(
+                        &config.topic,
+                        &config.consumer_group,
+                        &config.consumer_name,
+                        self.options.claim_idle_timeout,
+                        reclaim_limit,
+                    )
+                    .await
+                {
+                    Ok(messages) => {
+                        self.spawn_claimed_messages(&mut tasks, &config, messages, true, &runtime)
+                            .await?;
+                    }
+                    Err(_) => {
                         if !sleep_or_close(&mut close_rx, config.retry_backoff).await {
                             break;
                         }
                         continue;
                     }
                 }
-                Err(_) => {
-                    if !sleep_or_close(&mut close_rx, config.retry_backoff).await {
+            }
+
+            let read_limit = config
+                .backpressure
+                .as_ref()
+                .map_or(1, |policy| policy.max_batch_size)
+                .min(runtime.in_flight_limiter.available_permits())
+                .min(runtime.pending_ack_tracker.available_permits());
+
+            if read_limit == 0 {
+                if !wait_for_task_or_close(&mut tasks, &mut close_rx, config.retry_backoff).await? {
+                    break;
+                }
+                continue;
+            }
+
+            let read_future = self.backend.read_new(
+                &config.topic,
+                &config.consumer_group,
+                &config.consumer_name,
+                read_limit,
+                self.options.block_timeout,
+            );
+            tokio::pin!(read_future);
+            let new_messages = match tokio::select! {
+                biased;
+                changed = close_rx.changed() => {
+                    if changed.is_ok() && *close_rx.borrow() {
                         break;
                     }
                     continue;
                 }
-            }
-
-            let batch_size = config
-                .backpressure
-                .as_ref()
-                .map_or(config.max_in_flight.max(1), |policy| {
-                    policy.max_batch_size.max(1)
-                });
-
-            let new_messages = match self
-                .backend
-                .read_new(
-                    &config.topic,
-                    &config.consumer_group,
-                    &consumer_name,
-                    batch_size,
-                )
-                .await
-            {
+                result = &mut read_future => result,
+            } {
                 Ok(messages) => messages,
                 Err(_) => {
                     if !sleep_or_close(&mut close_rx, config.retry_backoff).await {
@@ -213,40 +286,103 @@ impl<B: StreamBackend> RedisStreamBus<B> {
                 }
             };
 
-            if new_messages.is_empty() {
-                tokio::select! {
-                    _ = close_rx.changed() => {
-                        if *close_rx.borrow() {
-                            break;
-                        }
-                    }
-                    _ = self.backend.wait_for_messages(self.options.block_timeout) => {}
+            if let Err(err) = self
+                .spawn_claimed_messages(&mut tasks, &config, new_messages, true, &runtime)
+                .await
+            {
+                if !sleep_or_close(&mut close_rx, config.retry_backoff).await {
+                    break;
                 }
-                continue;
+                return Err(err);
             }
+        }
 
-            let _ = self
-                .process_claimed_messages(&config, &handler, new_messages, false)
-                .await;
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    first_delivery_error.get_or_insert(err);
+                }
+                Err(err) => {
+                    first_delivery_error.get_or_insert_with(|| {
+                        EventBusError::Internal(format!("delivery task panicked: {err}"))
+                    });
+                }
+            }
+        }
+
+        if let Some(err) = first_delivery_error {
+            return Err(err);
+        }
+
+        Ok(())
+    }
+
+    async fn drain_completed_tasks(
+        &self,
+        tasks: &mut JoinSet<DeliveryTaskResult>,
+        first_delivery_error: &mut Option<EventBusError>,
+    ) -> Result<(), EventBusError> {
+        loop {
+            match tokio::time::timeout(Duration::ZERO, tasks.join_next()).await {
+                Ok(Some(Ok(Ok(())))) => {}
+                // Delivery infrastructure errors (ack/retry failure) don't kill the loop.
+                // Collect them so they're surfaced when the subscription closes.
+                Ok(Some(Ok(Err(err)))) => {
+                    first_delivery_error.get_or_insert(err);
+                }
+                // Task panics are programming errors — propagate them immediately.
+                Ok(Some(Err(err))) => {
+                    return Err(EventBusError::Internal(format!(
+                        "delivery task panicked: {err}"
+                    )))
+                }
+                Ok(None) | Err(_) => return Ok(()),
+            }
         }
     }
 
-    async fn process_claimed_messages<H>(
+    async fn spawn_claimed_messages<H>(
         &self,
+        tasks: &mut JoinSet<DeliveryTaskResult>,
         config: &SubscriptionConfig,
-        handler: &Arc<H>,
         messages: Vec<ClaimedMessage>,
-        stop_on_error: bool,
+        reserve_pending_ack: bool,
+        runtime: &RuntimeState<H>,
     ) -> Result<(), EventBusError>
     where
         H: Handler + Send + Sync + 'static,
     {
         for claimed in messages {
-            if let Err(err) = self.process_single_message(config, handler, claimed).await {
-                if stop_on_error {
-                    return Err(err);
-                }
+            if reserve_pending_ack {
+                runtime
+                    .pending_ack_tracker
+                    .track_new(claimed.id.clone())
+                    .await?;
             }
+
+            let in_flight_permit = match runtime.in_flight_limiter.clone().acquire_owned().await {
+                Ok(permit) => permit,
+                Err(err) => {
+                    // Release the pending ack slot we just reserved to avoid leaking it.
+                    if reserve_pending_ack {
+                        runtime.pending_ack_tracker.release(&claimed.id).await;
+                    }
+                    return Err(EventBusError::Internal(format!(
+                        "in-flight limiter closed: {err}"
+                    )));
+                }
+            };
+            let bus = self.clone();
+            let handler = Arc::clone(&runtime.handler);
+            let config = config.clone();
+            let pending_ack_tracker = Arc::clone(&runtime.pending_ack_tracker);
+
+            tasks.spawn(async move {
+                let _in_flight_permit = in_flight_permit;
+                bus.process_single_message(&config, &handler, claimed, pending_ack_tracker)
+                    .await
+            });
         }
 
         Ok(())
@@ -257,6 +393,7 @@ impl<B: StreamBackend> RedisStreamBus<B> {
         config: &SubscriptionConfig,
         handler: &Arc<H>,
         claimed: ClaimedMessage,
+        pending_ack_tracker: Arc<PendingAckTracker>,
     ) -> Result<(), EventBusError>
     where
         H: Handler + Send + Sync + 'static,
@@ -266,33 +403,26 @@ impl<B: StreamBackend> RedisStreamBus<B> {
 
         let delivery = RedisStreamDelivery::new(
             Arc::clone(&self.backend),
-            config.topic.clone(),
-            config.consumer_group.clone(),
             claimed.id,
             claimed.message,
             state,
             config.clone(),
+            pending_ack_tracker,
         );
 
-        if config.ack_mode == Some(AckMode::AutoOnReceive) {
+        if config.ack_mode == AckMode::AutoOnReceive {
             delivery.ack().await?;
         }
 
         match handler.handle(&delivery).await {
             Ok(()) => {
-                if config.ack_mode == Some(AckMode::AutoOnHandlerSuccess)
-                    && !delivery.is_finalized()
-                {
+                if config.ack_mode == AckMode::AutoOnHandlerSuccess && !delivery.is_finalized() {
                     delivery.ack().await?;
                 }
             }
             Err(err) => {
-                if config.ack_mode == Some(AckMode::AutoOnHandlerSuccess)
-                    && !delivery.is_finalized()
-                {
+                if config.ack_mode == AckMode::AutoOnHandlerSuccess && !delivery.is_finalized() {
                     delivery.retry(&err).await?;
-                } else {
-                    return Err(err);
                 }
             }
         }
@@ -321,9 +451,52 @@ impl<B: StreamBackend> Publisher for RedisStreamBus<B> {
             .map(|message| Self::prepare_message(message, &opts))
             .collect::<Result<Vec<_>, _>>()?;
 
-        for message in prepared_messages {
-            let topic = message.topic.clone();
-            self.backend.publish(&topic, message).await?;
+        let parallelism = prepared_messages.len().clamp(1, PUBLISH_BATCH_PARALLELISM);
+        let mut pending = prepared_messages.into_iter();
+        let mut tasks = JoinSet::new();
+        let mut first_error = None;
+
+        for _ in 0..parallelism {
+            let Some(message) = pending.next() else {
+                break;
+            };
+            let backend = Arc::clone(&self.backend);
+            tasks.spawn(async move {
+                let topic = message.topic.clone();
+                backend.publish(&topic, message).await.map(|_| ())
+            });
+        }
+
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(EventBusError::Internal(format!(
+                            "publish batch task failed: {err}"
+                        )));
+                    }
+                }
+            }
+
+            if first_error.is_none() {
+                if let Some(message) = pending.next() {
+                    let backend = Arc::clone(&self.backend);
+                    tasks.spawn(async move {
+                        let topic = message.topic.clone();
+                        backend.publish(&topic, message).await.map(|_| ())
+                    });
+                }
+            }
+        }
+
+        if let Some(err) = first_error {
+            return Err(err);
         }
 
         Ok(())
@@ -374,37 +547,38 @@ impl<B: StreamBackend> Subscriber for RedisStreamBus<B> {
             )
             .await?;
 
-        let worker_count = cfg.concurrency.max(1);
-        let handler = Arc::new(handler);
         let (close_tx, close_rx) = watch::channel(false);
+        let in_flight_limit = cfg.concurrency.max(1).min(cfg.max_in_flight.max(1));
+        let runtime = RuntimeState {
+            handler: Arc::new(handler),
+            in_flight_limiter: Arc::new(Semaphore::new(in_flight_limit)),
+            pending_ack_tracker: Arc::new(PendingAckTracker::new(cfg.max_pending_acks.max(1))),
+        };
 
-        let mut handles: Vec<JoinHandle<()>> = Vec::with_capacity(worker_count);
-        for worker_index in 0..worker_count {
+        let task = tokio::spawn({
             let bus = self.clone();
-            let handler = Arc::clone(&handler);
-            let consumer_name = if worker_count == 1 {
-                cfg.consumer_name.clone()
-            } else {
-                format!("{}-{worker_index}", cfg.consumer_name)
-            };
-            let close_rx = close_rx.clone();
-            let cfg_clone = cfg.clone();
-            handles.push(std::thread::spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("build redis stream subscription runtime");
-                runtime.block_on(async move {
-                    bus.consume_loop(cfg_clone, handler, close_rx, consumer_name)
-                        .await;
-                });
-            }));
-        }
+            let cfg = cfg.clone();
+            let handler = Arc::clone(&runtime.handler);
+            let in_flight_limiter = Arc::clone(&runtime.in_flight_limiter);
+            let pending_ack_tracker = Arc::clone(&runtime.pending_ack_tracker);
+            async move {
+                bus.consume_loop(
+                    cfg,
+                    close_rx,
+                    RuntimeState {
+                        handler,
+                        in_flight_limiter,
+                        pending_ack_tracker,
+                    },
+                )
+                .await
+            }
+        });
 
         Ok(RedisStreamSubscription::new(
             cfg.consumer_name.clone(),
             close_tx,
-            handles,
+            task,
         ))
     }
 }
@@ -419,6 +593,33 @@ async fn sleep_or_close(close_rx: &mut watch::Receiver<bool>, duration: Duration
             }
         }
         _ = tokio::time::sleep(duration) => true,
+    }
+}
+
+async fn wait_for_task_or_close(
+    tasks: &mut JoinSet<DeliveryTaskResult>,
+    close_rx: &mut watch::Receiver<bool>,
+    duration: Duration,
+) -> Result<bool, EventBusError> {
+    if tasks.is_empty() {
+        return Ok(sleep_or_close(close_rx, duration).await);
+    }
+
+    tokio::select! {
+        changed = close_rx.changed() => {
+            if changed.is_err() {
+                Ok(false)
+            } else {
+                Ok(!*close_rx.borrow())
+            }
+        }
+        result = tasks.join_next() => match result {
+            Some(Ok(Ok(()))) | None => Ok(true),
+            Some(Ok(Err(err))) => Err(err),
+            Some(Err(err)) => Err(EventBusError::Internal(format!(
+                "delivery task failed: {err}"
+            ))),
+        },
     }
 }
 

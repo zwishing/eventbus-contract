@@ -1,12 +1,12 @@
 use chrono::Utc;
 use eventbus_contract::{
     AckMode, BackpressurePolicy, ConsumerBalanceMode, DeadLetterDecision, DeadLetterPolicy,
-    DeadLetterReason, Delivery, DeliveryGuarantee, DeliveryInspector, DeliveryOutcome, DeliveryState,
-    DispatcherConfig, GuaranteeMatrix, Headers, IdempotencyClaim, IdempotencyClaimStore,
-    Message, OrderingMode, OverflowStrategy, PublishConfirmation, SchemaDescriptor,
-    SubscriptionSemantics, Topic, TraceContext, HEADER_BAGGAGE, HEADER_CONTENT_TYPE,
-    HEADER_EVENT_VERSION,
-    HEADER_IDEMPOTENCY_KEY, HEADER_TRACE_PARENT, HEADER_TRACE_STATE,
+    DeadLetterReason, Delivery, DeliveryGuarantee, DeliveryInspector, DeliveryOutcome,
+    DeliveryState, DispatcherConfig, GuaranteeMatrix, Headers, IdempotencyClaim,
+    IdempotencyClaimStore, Message, OrderingMode, OverflowStrategy, PublishConfirmation,
+    SchemaDescriptor, SubscriptionSemantics, Topic, TraceContext, HEADER_BAGGAGE,
+    HEADER_CONTENT_TYPE, HEADER_EVENT_VERSION, HEADER_IDEMPOTENCY_KEY, HEADER_TRACE_PARENT,
+    HEADER_TRACE_STATE,
 };
 
 #[test]
@@ -110,7 +110,10 @@ fn root_exports_idempotency_claim_contracts() {
     struct NoopClaimStore;
 
     impl IdempotencyClaimStore for NoopClaimStore {
-        async fn claim(&self, _claim: IdempotencyClaim) -> Result<bool, eventbus_contract::EventBusError> {
+        async fn claim(
+            &self,
+            _claim: IdempotencyClaim,
+        ) -> Result<bool, eventbus_contract::EventBusError> {
             Ok(true)
         }
 

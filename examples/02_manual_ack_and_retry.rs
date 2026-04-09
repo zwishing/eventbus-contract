@@ -138,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     topic: "order.placed".to_string(),
                     consumer_group: "fulfillment".to_string(),
                     consumer_name: "worker-1".to_string(),
-                    ack_mode: Some(AckMode::Manual),
+                    ack_mode: AckMode::Manual,
                     max_retry: 3,
                     concurrency: 1,
                     ..Default::default()
@@ -150,15 +150,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await?;
 
-        bus.publish(sample_message("order.placed", "evt-retry-1"), PublishOptions::default())
-            .await?;
+        bus.publish(
+            sample_message("order.placed", "evt-retry-1"),
+            PublishOptions::default(),
+        )
+        .await?;
 
         // Collect both signals: attempt 1 (retry) and attempt 2 (ack)
-        timeout(Duration::from_secs(3), rx.recv()).await?.expect("channel closed");
-        timeout(Duration::from_secs(3), rx.recv()).await?.expect("channel closed");
+        timeout(Duration::from_secs(3), rx.recv())
+            .await?
+            .expect("channel closed");
+        timeout(Duration::from_secs(3), rx.recv())
+            .await?
+            .expect("channel closed");
 
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
-        assert_eq!(backend.pending_count("order.placed", "fulfillment").await, 0);
+        assert_eq!(
+            backend.pending_count("order.placed", "fulfillment").await,
+            0
+        );
         println!("[main] pending=0 ✓");
         sub.close().await?;
     }
@@ -177,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     topic: "payment.event".to_string(),
                     consumer_group: "ledger".to_string(),
                     consumer_name: "worker-1".to_string(),
-                    ack_mode: Some(AckMode::Manual),
+                    ack_mode: AckMode::Manual,
                     dead_letter_topic: Some("payment.event.dlq".to_string()),
                     concurrency: 1,
                     ..Default::default()
@@ -186,10 +196,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await?;
 
-        bus.publish(sample_message("payment.event", "evt-nack-1"), PublishOptions::default())
-            .await?;
+        bus.publish(
+            sample_message("payment.event", "evt-nack-1"),
+            PublishOptions::default(),
+        )
+        .await?;
 
-        timeout(Duration::from_secs(3), rx.recv()).await?.expect("channel closed");
+        timeout(Duration::from_secs(3), rx.recv())
+            .await?
+            .expect("channel closed");
 
         assert_eq!(backend.stream_len("payment.event.dlq").await, 1);
         println!("[main] dead-letter stream length=1 ✓");

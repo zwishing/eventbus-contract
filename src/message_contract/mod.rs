@@ -10,6 +10,9 @@ pub const HEADER_TRACE_PARENT: &str = "traceparent";
 pub const HEADER_TRACE_STATE: &str = "tracestate";
 pub const HEADER_BAGGAGE: &str = "baggage";
 pub const HEADER_IDEMPOTENCY_KEY: &str = "idempotency-key";
+pub const HEADER_RETRY_ATTEMPT: &str = "retry-attempt";
+pub const HEADER_RETRY_REASON: &str = "retry-reason";
+pub const HEADER_DEAD_LETTER_REASON: &str = "dead-letter-reason";
 
 // ---------------------------------------------------------------------------
 // Schema descriptor
