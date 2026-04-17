@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use eventbus_contract::redis_stream::{MemoryStreamBackend, RedisStreamBus, RedisStreamBusOptions};
+use eventbus_contract::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
 use eventbus_contract::{
     AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig,
 };
@@ -54,7 +54,7 @@ impl Handler for PrintHandler {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend, RedisStreamBusOptions::default())?;
+    let bus = StreamBus::new(backend, StreamBusOptions::default())?;
 
     // Subscribe first — the consumer group must exist before publish.
     let (tx, mut rx) = mpsc::channel(8);

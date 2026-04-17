@@ -17,7 +17,7 @@ eventbus-contract = { path = ".", features = ["redis-backend"] }
 
 ```rust
 use std::sync::Arc;
-use eventbus_contract::redis_stream::{MemoryStreamBackend, RedisStreamBus, RedisStreamBusOptions};
+use eventbus_contract::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
 use eventbus_contract::{AckMode, Delivery, EventBusError, Handler, Message, PublishOptions, SubscriptionConfig};
 
 struct MyHandler;
@@ -32,7 +32,7 @@ impl Handler for MyHandler {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend, RedisStreamBusOptions::default())?;
+    let bus = StreamBus::new(backend, StreamBusOptions::default())?;
 
     let sub = bus.subscribe(
         SubscriptionConfig {
@@ -123,23 +123,23 @@ In-process stream. All integration tests use this. Zero setup required.
 
 ```rust
 let backend = Arc::new(MemoryStreamBackend::default());
-let bus = RedisStreamBus::new(backend, RedisStreamBusOptions::default())?;
+let bus = StreamBus::new(backend, StreamBusOptions::default())?;
 ```
 
 ### RedisBackend (`--features redis-backend`)
 
 Backed by Redis Streams. Wire format is JSON-compatible with the Go
-`RedisStreamBus`. Each entry is stored as `XADD <topic> * message <json>`.
+`StreamBus`. Each entry is stored as `XADD <topic> * message <json>`.
 
 ```rust
 let client = redis::Client::open("redis://127.0.0.1/")?;
 let conn = client.get_multiplexed_async_connection().await?;
 
 // Convenience constructor
-let bus = RedisStreamBus::from_connection(conn, RedisStreamBusOptions::default())?;
+let bus = StreamBus::from_connection(conn, StreamBusOptions::default())?;
 ```
 
-`RedisStreamBusOptions` tunables:
+`StreamBusOptions` tunables:
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -204,7 +204,7 @@ cargo fmt
 src/
 ├── eventbus/         Core traits: Publisher, Subscriber, Handler, Delivery, Bus, Codec
 ├── contract/         Value objects: DeliveryGuarantee, AckMode, BackpressurePolicy, …
-├── redis_stream/     RedisStreamBus<B: StreamBackend> + MemoryStreamBackend + RedisBackend
+├── stream/           StreamBus<B: StreamBackend> + backends::{memory, redis}
 ├── outbox/           OutboxStore trait + OutboxStatus state machine (transactional outbox)
 ├── idempotency/      IdempotencyStore (dedup) + IdempotencyClaimStore (lease-based dedup)
 ├── integration/      IntegrationEvent + MessageFactory + EventPublisher (DDD helpers)

@@ -21,7 +21,7 @@ use std::sync::{
 use std::time::Duration;
 
 use chrono::Utc;
-use eventbus_contract::redis_stream::{MemoryStreamBackend, RedisStreamBus, RedisStreamBusOptions};
+use eventbus_contract::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
 use eventbus_contract::{
     AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig,
 };
@@ -128,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     println!("=== Part 1: retry then succeed ===");
     {
-        let bus = RedisStreamBus::new(Arc::clone(&backend), RedisStreamBusOptions::default())?;
+        let bus = StreamBus::new(Arc::clone(&backend), StreamBusOptions::default())?;
         let attempts = Arc::new(AtomicU32::new(0));
         let (tx, mut rx) = mpsc::channel(4);
 
@@ -178,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     println!("\n=== Part 2: nack → dead letter ===");
     {
-        let bus = RedisStreamBus::new(Arc::clone(&backend), RedisStreamBusOptions::default())?;
+        let bus = StreamBus::new(Arc::clone(&backend), StreamBusOptions::default())?;
         let (tx, mut rx) = mpsc::channel(1);
 
         let sub = bus

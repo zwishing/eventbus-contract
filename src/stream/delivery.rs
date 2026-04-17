@@ -3,43 +3,57 @@ use std::sync::{
     Arc,
 };
 
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit};
+
 use crate::{
     Delivery, DeliveryInspector, DeliveryState, EventBusError, Message, SubscriptionConfig,
     HEADER_DEAD_LETTER_REASON, HEADER_RETRY_ATTEMPT, HEADER_RETRY_REASON,
 };
 
-use super::{
-    backend::{SharedBackend, StreamBackend},
-    bus::PendingAckTracker,
-};
+use super::ack_flusher::AckRequest;
+use super::backend::{SharedBackend, StreamBackend};
 
-pub(super) struct RedisStreamDelivery<B: StreamBackend> {
+/// Single message in flight.
+///
+/// The `_permit` field is an [`OwnedSemaphorePermit`] whose `Drop` returns the
+/// slot to `RuntimeState::limiter`. This is the single source of truth for
+/// in-flight accounting: the permit is held for the full handler + ack
+/// round-trip, and auto-released on every termination path (ack, nack,
+/// retry, handler panic, task cancel, Delivery dropped without finalize).
+///
+/// Acks are batched: `mark_acked` sends the message ID to a background
+/// flusher via `ack_tx`, then awaits a oneshot for the result. This turns
+/// N per-message XACK round-trips into ~(N / batch_size) batched commands.
+pub(super) struct StreamDelivery<B: StreamBackend> {
     backend: SharedBackend<B>,
+    ack_tx: mpsc::Sender<AckRequest>,
     message_id: String,
-    message: Message,
+    message: Arc<Message>,
     state: DeliveryState,
-    config: SubscriptionConfig,
-    pending_ack_tracker: Arc<PendingAckTracker>,
+    config: Arc<SubscriptionConfig>,
     finalized: AtomicBool,
+    _permit: OwnedSemaphorePermit,
 }
 
-impl<B: StreamBackend> RedisStreamDelivery<B> {
+impl<B: StreamBackend> StreamDelivery<B> {
     pub(super) fn new(
         backend: SharedBackend<B>,
+        ack_tx: mpsc::Sender<AckRequest>,
         message_id: String,
-        message: Message,
+        message: Arc<Message>,
         state: DeliveryState,
-        config: SubscriptionConfig,
-        pending_ack_tracker: Arc<PendingAckTracker>,
+        config: Arc<SubscriptionConfig>,
+        permit: OwnedSemaphorePermit,
     ) -> Self {
         Self {
             backend,
+            ack_tx,
             message_id,
             message,
             state,
             config,
-            pending_ack_tracker,
             finalized: AtomicBool::new(false),
+            _permit: permit,
         }
     }
 
@@ -48,18 +62,22 @@ impl<B: StreamBackend> RedisStreamDelivery<B> {
     }
 
     async fn mark_acked(&self) -> Result<(), EventBusError> {
-        self.backend
-            .ack(
-                &self.config.topic,
-                &self.config.consumer_group,
-                &self.message_id,
-            )
+        let (done_tx, done_rx) = oneshot::channel();
+        self.ack_tx
+            .send(AckRequest {
+                id: self.message_id.clone(),
+                done: done_tx,
+            })
             .await
+            .map_err(|_| EventBusError::Internal("ack flusher shut down".into()))?;
+        done_rx
+            .await
+            .map_err(|_| EventBusError::Internal("ack flusher dropped response".into()))?
     }
 
     async fn publish_dead_letter(&self, reason: &str) -> Result<(), EventBusError> {
         if let Some(dead_letter_topic) = self.config.dead_letter_topic.as_deref() {
-            let mut dead_letter = self.message.clone();
+            let mut dead_letter = Message::clone(&self.message);
             dead_letter.topic = dead_letter_topic.to_string();
             dead_letter
                 .headers
@@ -81,13 +99,13 @@ impl<B: StreamBackend> RedisStreamDelivery<B> {
     }
 }
 
-impl<B: StreamBackend> DeliveryInspector for RedisStreamDelivery<B> {
+impl<B: StreamBackend> DeliveryInspector for StreamDelivery<B> {
     async fn state(&self) -> Result<DeliveryState, EventBusError> {
         Ok(self.state.clone())
     }
 }
 
-impl<B: StreamBackend> Delivery for RedisStreamDelivery<B> {
+impl<B: StreamBackend> Delivery for StreamDelivery<B> {
     fn message(&self) -> &Message {
         &self.message
     }
@@ -102,7 +120,6 @@ impl<B: StreamBackend> Delivery for RedisStreamDelivery<B> {
             return Err(err);
         }
 
-        self.pending_ack_tracker.release(&self.message_id).await;
         Ok(())
     }
 
@@ -124,7 +141,6 @@ impl<B: StreamBackend> Delivery for RedisStreamDelivery<B> {
             return Err(err);
         }
 
-        self.pending_ack_tracker.release(&self.message_id).await;
         Ok(())
     }
 
@@ -144,7 +160,7 @@ impl<B: StreamBackend> Delivery for RedisStreamDelivery<B> {
                 return Err(err);
             }
         } else {
-            let mut retried = self.message.clone();
+            let mut retried = Message::clone(&self.message);
             retried.headers.insert(
                 HEADER_RETRY_ATTEMPT.to_string(),
                 self.state.attempt.to_string(),
@@ -164,7 +180,6 @@ impl<B: StreamBackend> Delivery for RedisStreamDelivery<B> {
             return Err(err);
         }
 
-        self.pending_ack_tracker.release(&self.message_id).await;
         Ok(())
     }
 }

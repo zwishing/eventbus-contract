@@ -6,8 +6,8 @@ use std::time::Duration;
 use std::{collections::VecDeque, future::Future, pin::Pin};
 
 use chrono::Utc;
-use eventbus_contract::redis_stream::{
-    ClaimedMessage, MemoryStreamBackend, RedisStreamBus, RedisStreamBusOptions, StreamBackend,
+use eventbus_contract::stream::{
+    ClaimedMessage, MemoryStreamBackend, StreamBackend, StreamBus, StreamBusOptions,
 };
 use eventbus_contract::{
     AckMode, Delivery, DeliveryState, EventBusError, Handler, Headers, Message, PublishOptions,
@@ -163,8 +163,7 @@ impl Handler for ErrorHandler {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn publish_subscribe_auto_ack_drains_pending() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend.clone(), RedisStreamBusOptions::default())
-        .expect("construct bus");
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
 
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
@@ -202,15 +201,14 @@ async fn publish_subscribe_auto_ack_drains_pending() {
         Some("meta-val")
     );
 
-    assert_eq!(backend.pending_count("evt.user", "cg.auto-ack").await, 0);
     sub.close().await.expect("close sub");
+    assert_eq!(backend.pending_count("evt.user", "cg.auto-ack").await, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_ack_drains_pending() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend.clone(), RedisStreamBusOptions::default())
-        .expect("construct bus");
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
 
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
@@ -246,8 +244,7 @@ async fn manual_ack_drains_pending() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retry_redelivers_message_and_then_drains_pending() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend.clone(), RedisStreamBusOptions::default())
-        .expect("construct bus");
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
 
     let attempts = Arc::new(AtomicUsize::new(0));
     let (tx, mut rx) = mpsc::channel(4);
@@ -291,9 +288,9 @@ async fn retry_redelivers_message_and_then_drains_pending() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reclaims_pending_from_inactive_consumer() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(
+    let bus = StreamBus::new(
         backend.clone(),
-        RedisStreamBusOptions {
+        StreamBusOptions {
             claim_idle_timeout: Duration::from_millis(20),
             ..Default::default()
         },
@@ -359,8 +356,7 @@ async fn reclaims_pending_from_inactive_consumer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nack_routes_to_dead_letter_stream() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend.clone(), RedisStreamBusOptions::default())
-        .expect("construct bus");
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
 
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
@@ -396,8 +392,7 @@ async fn nack_routes_to_dead_letter_stream() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retry_max_routes_to_dead_letter_stream() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend.clone(), RedisStreamBusOptions::default())
-        .expect("construct bus");
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
 
     let attempts = Arc::new(AtomicUsize::new(0));
     let result = Arc::new(Mutex::new(Vec::new()));
@@ -459,21 +454,20 @@ async fn retry_max_routes_to_dead_letter_stream() {
     .await
     .expect("dead letter written");
 
-    assert_eq!(
-        backend.pending_count("evt.retry.max", "cg.retry.max").await,
-        0
-    );
     assert_eq!(backend.stream_len("evt.retry.max.dlq").await, 1);
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
     assert_eq!(result.lock().await.len(), 1);
     sub.close().await.expect("close sub");
+    assert_eq!(
+        backend.pending_count("evt.retry.max", "cg.retry.max").await,
+        0
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_ack_handler_error_does_not_auto_retry() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend.clone(), RedisStreamBusOptions::default())
-        .expect("construct bus");
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
 
     let attempts = Arc::new(AtomicUsize::new(0));
     let sub = bus
@@ -529,8 +523,7 @@ async fn manual_ack_handler_error_does_not_auto_retry() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subscribe_generates_consumer_name_when_empty() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend.clone(), RedisStreamBusOptions::default())
-        .expect("construct bus");
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
 
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
@@ -568,8 +561,7 @@ async fn subscribe_generates_consumer_name_when_empty() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drop_subscription_stops_background_workers() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus =
-        RedisStreamBus::new(backend, RedisStreamBusOptions::default()).expect("construct bus");
+    let bus = StreamBus::new(backend, StreamBusOptions::default()).expect("construct bus");
 
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
@@ -626,8 +618,7 @@ async fn subscription_respects_max_in_flight_limit() {
     }
 
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus =
-        RedisStreamBus::new(backend, RedisStreamBusOptions::default()).expect("construct bus");
+    let bus = StreamBus::new(backend, StreamBusOptions::default()).expect("construct bus");
 
     let (started_tx, mut started_rx) = mpsc::channel(4);
     let release = Arc::new(tokio::sync::Semaphore::new(0));
@@ -685,9 +676,9 @@ async fn subscription_respects_max_in_flight_limit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn group_start_id_zero_reads_existing_messages() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(
+    let bus = StreamBus::new(
         backend.clone(),
-        RedisStreamBusOptions {
+        StreamBusOptions {
             group_start_id: "0".to_string(),
             ..Default::default()
         },
@@ -729,8 +720,7 @@ async fn group_start_id_zero_reads_existing_messages() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn publish_batch_rejects_invalid_input_before_publishing_any_message() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend.clone(), RedisStreamBusOptions::default())
-        .expect("construct bus");
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
 
     let messages = vec![
         message("evt.batch.atomic", "uid-valid"),
@@ -749,8 +739,7 @@ async fn publish_batch_rejects_invalid_input_before_publishing_any_message() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn publish_allows_empty_uid_to_match_go_parity() {
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(backend.clone(), RedisStreamBusOptions::default())
-        .expect("construct bus");
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
 
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
@@ -781,13 +770,17 @@ async fn publish_allows_empty_uid_to_match_go_parity() {
     sub.close().await.expect("close sub");
 }
 
+/// Unified in-flight limiter: a running handler must hold its permit for the
+/// full duration of `handle()`. A slot-1 consumer that is still inside a
+/// blocked handler must not read another message until the handler returns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reclaimed_messages_consume_pending_ack_budget() {
-    struct ObserveOnlyHandler {
+async fn reclaimed_messages_consume_in_flight_budget() {
+    struct BlockingHandler {
         started_tx: mpsc::Sender<String>,
+        release: Arc<Notify>,
     }
 
-    impl Handler for ObserveOnlyHandler {
+    impl Handler for BlockingHandler {
         async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
         where
             D: Delivery + Send + Sync,
@@ -795,137 +788,79 @@ async fn reclaimed_messages_consume_pending_ack_budget() {
             self.started_tx
                 .send(delivery.message().uid.clone())
                 .await
-                .map_err(|err| EventBusError::Internal(err.to_string()))
-        }
-    }
-
-    struct AckUidHandler {
-        tx: mpsc::Sender<String>,
-    }
-
-    impl Handler for AckUidHandler {
-        async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-        where
-            D: Delivery + Send + Sync,
-        {
-            self.tx
-                .send(delivery.message().uid.clone())
-                .await
                 .map_err(|err| EventBusError::Internal(err.to_string()))?;
+            self.release.notified().await;
             delivery.ack().await
         }
     }
 
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(
+    let bus = StreamBus::new(
         backend.clone(),
-        RedisStreamBusOptions {
+        StreamBusOptions {
             claim_idle_timeout: Duration::from_millis(20),
             ..Default::default()
         },
     )
     .expect("construct bus");
 
-    let (first_tx, mut first_rx) = mpsc::channel(1);
-    let first_sub = bus
-        .subscribe(
-            SubscriptionConfig {
-                topic: "evt.reclaim.pending-budget".to_string(),
-                consumer_group: "cg.reclaim.pending-budget".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::Manual,
-                concurrency: 1,
-                ..Default::default()
-            },
-            ReceiveOnlyHandler { tx: first_tx },
-        )
-        .await
-        .expect("first subscribe");
-
-    bus.publish(
-        message("evt.reclaim.pending-budget", "uid-reclaim"),
-        PublishOptions::default(),
-    )
-    .await
-    .expect("publish reclaim candidate");
-
-    timeout(Duration::from_secs(2), first_rx.recv())
-        .await
-        .expect("first receive")
-        .expect("signal");
-    first_sub.close().await.expect("close first sub");
-
-    sleep(Duration::from_millis(50)).await;
-
     let (started_tx, mut started_rx) = mpsc::channel(2);
-    let second_sub = bus
+    let release = Arc::new(Notify::new());
+    let sub = bus
         .subscribe(
             SubscriptionConfig {
-                topic: "evt.reclaim.pending-budget".to_string(),
-                consumer_group: "cg.reclaim.pending-budget".to_string(),
-                consumer_name: "consumer-2".to_string(),
+                topic: "evt.inflight-budget".to_string(),
+                consumer_group: "cg.inflight-budget".to_string(),
+                consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
                 concurrency: 1,
                 max_in_flight: 1,
                 max_pending_acks: 1,
                 ..Default::default()
             },
-            ObserveOnlyHandler { started_tx },
+            BlockingHandler {
+                started_tx,
+                release: Arc::clone(&release),
+            },
         )
         .await
-        .expect("second subscribe");
+        .expect("subscribe");
 
     bus.publish(
-        message("evt.reclaim.pending-budget", "uid-new"),
+        message("evt.inflight-budget", "uid-first"),
         PublishOptions::default(),
     )
     .await
-    .expect("publish fresh message");
+    .expect("publish first");
+    bus.publish(
+        message("evt.inflight-budget", "uid-second"),
+        PublishOptions::default(),
+    )
+    .await
+    .expect("publish second");
 
+    // First message enters the handler.
     let first = timeout(Duration::from_secs(2), started_rx.recv())
         .await
-        .expect("reclaimed delivery")
+        .expect("first delivery")
         .expect("uid");
-    assert_eq!(first, "uid-reclaim");
+    assert_eq!(first, "uid-first");
+    // Second message must NOT be delivered while the handler still holds the
+    // slot (permit not yet released).
     assert!(timeout(Duration::from_millis(200), started_rx.recv())
         .await
         .is_err());
 
-    second_sub.close().await.expect("close second sub");
-
-    sleep(Duration::from_millis(50)).await;
-
-    let (drain_tx, mut drain_rx) = mpsc::channel(2);
-    let third_sub = bus
-        .subscribe(
-            SubscriptionConfig {
-                topic: "evt.reclaim.pending-budget".to_string(),
-                consumer_group: "cg.reclaim.pending-budget".to_string(),
-                consumer_name: "consumer-3".to_string(),
-                ack_mode: AckMode::Manual,
-                concurrency: 1,
-                max_in_flight: 1,
-                max_pending_acks: 1,
-                ..Default::default()
-            },
-            AckUidHandler { tx: drain_tx },
-        )
+    // Release the handler; second message must now be delivered.
+    release.notify_one();
+    let second = timeout(Duration::from_secs(2), started_rx.recv())
         .await
-        .expect("third subscribe");
-
-    let reclaimed = timeout(Duration::from_secs(2), drain_rx.recv())
-        .await
-        .expect("reclaimed delivery after reopen")
+        .expect("second delivery")
         .expect("uid");
-    assert_eq!(reclaimed, "uid-reclaim");
+    assert_eq!(second, "uid-second");
+    release.notify_one();
 
-    let fresh = timeout(Duration::from_secs(2), drain_rx.recv())
-        .await
-        .expect("fresh delivery after reopen")
-        .expect("uid");
-    assert_eq!(fresh, "uid-new");
-
-    third_sub.close().await.expect("close third sub");
+    sub.close().await.expect("close sub");
 }
 
 #[derive(Default)]
@@ -988,7 +923,7 @@ impl StreamBackend for FailingAckBackend {
                 let mut queue = self.queue.lock().await;
                 queue.push_back(ClaimedMessage {
                     id: id.clone(),
-                    message,
+                    message: Arc::new(message),
                     state: DeliveryState {
                         attempt: 1,
                         max_attempt: 1,
@@ -1038,8 +973,7 @@ impl StreamBackend for FailingAckBackend {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subscription_close_surfaces_background_delivery_errors() {
     let backend = Arc::new(FailingAckBackend::default());
-    let bus =
-        RedisStreamBus::new(backend, RedisStreamBusOptions::default()).expect("construct bus");
+    let bus = StreamBus::new(backend, StreamBusOptions::default()).expect("construct bus");
 
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
@@ -1146,8 +1080,7 @@ impl StreamBackend for ParallelPublishBackend {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn publish_batch_uses_parallel_publishes() {
     let backend = Arc::new(ParallelPublishBackend::default());
-    let bus = RedisStreamBus::new(backend.clone(), RedisStreamBusOptions::default())
-        .expect("construct bus");
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
 
     let messages = vec![
         message("evt.parallel", "uid-1"),
@@ -1161,4 +1094,194 @@ async fn publish_batch_uses_parallel_publishes() {
         .expect("publish batch");
 
     assert!(backend.max_active.load(Ordering::SeqCst) > 1);
+}
+
+/// Tracks whether ack comes through as batched `ack_many` or per-id `ack`.
+/// Used to prove the flusher coalesces concurrent handler-success acks into
+/// a single XACK command instead of N round-trips.
+#[derive(Default)]
+struct BatchAckBackend {
+    next_id: AtomicUsize,
+    queue: Mutex<VecDeque<ClaimedMessage>>,
+    notify: Notify,
+    ack_calls: AtomicUsize,
+    ack_many_calls: AtomicUsize,
+    ack_many_total_ids: AtomicUsize,
+    ack_many_max_batch: AtomicUsize,
+}
+
+impl StreamBackend for BatchAckBackend {
+    fn create_group(
+        &self,
+        _stream: &str,
+        _group: &str,
+        _start_id: &str,
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send {
+        async { Ok(()) }
+    }
+
+    fn publish(
+        &self,
+        _stream: &str,
+        message: Message,
+    ) -> impl Future<Output = Result<String, EventBusError>> + Send {
+        async move {
+            let id = format!("{}-0", self.next_id.fetch_add(1, Ordering::SeqCst));
+            {
+                let mut queue = self.queue.lock().await;
+                queue.push_back(ClaimedMessage {
+                    id: id.clone(),
+                    message: Arc::new(message),
+                    state: DeliveryState {
+                        attempt: 1,
+                        max_attempt: 1,
+                        first_received: Utc::now(),
+                        last_received: Utc::now(),
+                        redelivered: false,
+                    },
+                });
+            }
+            self.notify.notify_waiters();
+            Ok(id)
+        }
+    }
+
+    fn reclaim_idle(
+        &self,
+        _stream: &str,
+        _group: &str,
+        _consumer: &str,
+        _min_idle: Duration,
+        _count: usize,
+    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send {
+        async { Ok(Vec::new()) }
+    }
+
+    fn read_new(
+        &self,
+        _stream: &str,
+        _group: &str,
+        _consumer: &str,
+        count: usize,
+        wait: Duration,
+    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send {
+        async move {
+            if count == 0 {
+                return Ok(Vec::new());
+            }
+            {
+                let mut queue = self.queue.lock().await;
+                if !queue.is_empty() {
+                    let take = count.min(queue.len());
+                    return Ok(queue.drain(..take).collect());
+                }
+            }
+            if wait.is_zero() {
+                return Ok(Vec::new());
+            }
+            let notified = self.notify.notified();
+            let _ = tokio::time::timeout(wait, notified).await;
+            let mut queue = self.queue.lock().await;
+            let take = count.min(queue.len());
+            Ok(queue.drain(..take).collect())
+        }
+    }
+
+    fn ack(
+        &self,
+        _stream: &str,
+        _group: &str,
+        _message_id: &str,
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send {
+        self.ack_calls.fetch_add(1, Ordering::SeqCst);
+        async { Ok(()) }
+    }
+
+    fn ack_many(
+        &self,
+        _stream: &str,
+        _group: &str,
+        message_ids: &[String],
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send {
+        let n = message_ids.len();
+        self.ack_many_calls.fetch_add(1, Ordering::SeqCst);
+        self.ack_many_total_ids.fetch_add(n, Ordering::SeqCst);
+        let _ = self
+            .ack_many_max_batch
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| Some(cur.max(n)));
+        async { Ok(()) }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_ack_uses_batched_xack() {
+    const TOTAL: usize = 16;
+
+    let backend = Arc::new(BatchAckBackend::default());
+    let options = StreamBusOptions {
+        // Widen the flush window so bursty handler-success acks coalesce into
+        // one batch instead of racing the 2ms default.
+        ack_flush_interval: Duration::from_millis(50),
+        ack_batch_size: 64,
+        ..Default::default()
+    };
+    let bus = StreamBus::new(backend.clone(), options).expect("construct bus");
+
+    let (tx, mut rx) = mpsc::channel(TOTAL);
+    let sub = bus
+        .subscribe(
+            SubscriptionConfig {
+                topic: "evt.batch-ack".to_string(),
+                consumer_group: "cg.batch-ack".to_string(),
+                consumer_name: "consumer-1".to_string(),
+                ack_mode: AckMode::AutoOnHandlerSuccess,
+                concurrency: TOTAL,
+                ..Default::default()
+            },
+            AutoAckHandler { tx },
+        )
+        .await
+        .expect("subscribe");
+
+    let msgs: Vec<Message> = (0..TOTAL)
+        .map(|i| message("evt.batch-ack", &format!("uid-{i}")))
+        .collect();
+    bus.publish_batch(msgs, PublishOptions::default())
+        .await
+        .expect("publish batch");
+
+    for _ in 0..TOTAL {
+        timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("handler ran")
+            .expect("message");
+    }
+
+    sub.close().await.expect("close sub");
+
+    let ack_calls = backend.ack_calls.load(Ordering::SeqCst);
+    let ack_many_calls = backend.ack_many_calls.load(Ordering::SeqCst);
+    let total_ids = backend.ack_many_total_ids.load(Ordering::SeqCst);
+    let max_batch = backend.ack_many_max_batch.load(Ordering::SeqCst);
+
+    assert_eq!(
+        ack_calls, 0,
+        "flusher must never fall back to per-id ack; saw {ack_calls}"
+    );
+    assert!(
+        ack_many_calls >= 1,
+        "expected at least one ack_many call, saw {ack_many_calls}"
+    );
+    assert_eq!(
+        total_ids, TOTAL,
+        "every delivery must be acked exactly once"
+    );
+    assert!(
+        max_batch > 1,
+        "expected at least one batched ack (>1 id), largest batch was {max_batch}"
+    );
+    assert!(
+        ack_many_calls < TOTAL,
+        "flusher should coalesce: {ack_many_calls} calls for {TOTAL} messages is not batching"
+    );
 }

@@ -10,6 +10,8 @@ redis-backend = ["dep:redis", "dep:serde_json"]
 [dependencies]
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+rand = "0.8"
 redis = { version = "1", features = ["tokio-comp", "streams"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }

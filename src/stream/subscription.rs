@@ -8,14 +8,14 @@ use tokio::task::JoinHandle;
 
 use crate::{EventBusError, Subscription};
 
-pub struct RedisStreamSubscription {
+pub struct StreamSubscription {
     name: String,
     closed: AtomicBool,
     close_tx: watch::Sender<bool>,
     task: Mutex<Option<JoinHandle<Result<(), EventBusError>>>>,
 }
 
-impl RedisStreamSubscription {
+impl StreamSubscription {
     pub(crate) fn new(
         name: String,
         close_tx: watch::Sender<bool>,
@@ -58,17 +58,17 @@ impl RedisStreamSubscription {
     }
 }
 
-impl Subscription for RedisStreamSubscription {
+impl Subscription for StreamSubscription {
     fn name(&self) -> &str {
         self.name()
     }
 
     async fn close(&self) -> Result<(), EventBusError> {
-        RedisStreamSubscription::close(self).await
+        StreamSubscription::close(self).await
     }
 }
 
-impl Drop for RedisStreamSubscription {
+impl Drop for StreamSubscription {
     fn drop(&mut self) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;

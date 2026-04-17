@@ -19,7 +19,7 @@ use std::sync::{
 use std::time::Duration;
 
 use chrono::Utc;
-use eventbus_contract::redis_stream::{MemoryStreamBackend, RedisStreamBus, RedisStreamBusOptions};
+use eventbus_contract::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
 use eventbus_contract::{
     AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig,
 };
@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     const MESSAGE_COUNT: usize = 9;
 
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = RedisStreamBus::new(Arc::clone(&backend), RedisStreamBusOptions::default())?;
+    let bus = StreamBus::new(Arc::clone(&backend), StreamBusOptions::default())?;
 
     let processed = Arc::new(AtomicUsize::new(0));
     let (tx, mut rx) = mpsc::channel(MESSAGE_COUNT);

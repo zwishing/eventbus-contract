@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    future::Future,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -8,55 +7,22 @@ use std::{
 use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, Notify};
 
-use crate::{DeliveryState, EventBusError, Message};
+use crate::{
+    stream::backend::{ClaimedMessage, StreamBackend},
+    DeliveryState, EventBusError, Message,
+};
 
-#[derive(Debug, Clone)]
-pub struct ClaimedMessage {
-    pub id: String,
-    pub message: Message,
-    pub state: DeliveryState,
-}
-
-pub trait StreamBackend: Send + Sync + 'static {
-    fn create_group(
-        &self,
-        stream: &str,
-        group: &str,
-        start_id: &str,
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
-
-    fn publish(
-        &self,
-        stream: &str,
-        message: Message,
-    ) -> impl Future<Output = Result<String, EventBusError>> + Send;
-
-    fn reclaim_idle(
-        &self,
-        stream: &str,
-        group: &str,
-        consumer: &str,
-        min_idle: Duration,
-        count: usize,
-    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send;
-
-    fn read_new(
-        &self,
-        stream: &str,
-        group: &str,
-        consumer: &str,
-        count: usize,
-        timeout: Duration,
-    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send;
-
-    fn ack(
-        &self,
-        stream: &str,
-        group: &str,
-        message_id: &str,
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
-}
-
+/// In-process stream backend.
+///
+/// ⚠️ **For functional tests and examples only.**
+///
+/// All state lives behind a single `tokio::sync::Mutex`, so every backend
+/// operation (publish / read / ack / reclaim) is globally serialized. This is
+/// deliberate: it makes the memory backend a deterministic reference for
+/// correctness tests, but it is **not representative of production
+/// throughput** and must not be used for benchmarking the `StreamBus`
+/// concurrency model. Use [`crate::stream::RedisBackend`] (behind the
+/// `redis-backend` feature) for any performance-oriented workload.
 #[derive(Debug, Default)]
 pub struct MemoryStreamBackend {
     state: Mutex<MemoryState>,
@@ -167,7 +133,7 @@ impl StreamBackend for MemoryStreamBackend {
 
                 claimed.push(ClaimedMessage {
                     id,
-                    message: pending.message.clone(),
+                    message: Arc::clone(&pending.message),
                     state: DeliveryState {
                         attempt: pending.delivery_count,
                         max_attempt: 0, // filled by bus layer from SubscriptionConfig
@@ -223,6 +189,23 @@ impl StreamBackend for MemoryStreamBackend {
 
         Ok(())
     }
+
+    async fn ack_many(
+        &self,
+        stream: &str,
+        group: &str,
+        message_ids: &[String],
+    ) -> Result<(), EventBusError> {
+        let mut state = self.state.lock().await;
+        if let Some(stream_state) = state.streams.get_mut(stream) {
+            if let Some(group_state) = stream_state.groups.get_mut(group) {
+                for id in message_ids {
+                    group_state.pending.remove(id);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl MemoryStreamBackend {
@@ -254,10 +237,11 @@ impl MemoryStreamBackend {
         let mut claimed = Vec::with_capacity(entries.len());
         for entry in entries {
             let attempt = retry_attempt(&entry.message) + 1;
+            let message = Arc::new(entry.message);
             group_state.pending.insert(
                 entry.id.clone(),
                 PendingEntry {
-                    message: entry.message.clone(),
+                    message: Arc::clone(&message),
                     owner: consumer.to_string(),
                     delivery_count: attempt,
                     first_received: now,
@@ -269,7 +253,7 @@ impl MemoryStreamBackend {
 
             claimed.push(ClaimedMessage {
                 id: entry.id,
-                message: entry.message,
+                message,
                 state: DeliveryState {
                     attempt,
                     max_attempt: 0, // filled by bus layer from SubscriptionConfig
@@ -310,7 +294,7 @@ struct GroupState {
 
 #[derive(Debug, Clone)]
 struct PendingEntry {
-    message: Message,
+    message: Arc<Message>,
     owner: String,
     delivery_count: u32,
     first_received: DateTime<Utc>,
@@ -326,5 +310,3 @@ fn retry_attempt(message: &Message) -> u32 {
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(0)
 }
-
-pub(crate) type SharedBackend<B> = Arc<B>;

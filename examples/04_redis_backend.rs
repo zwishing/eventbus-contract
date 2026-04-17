@@ -12,7 +12,7 @@
 //! cargo run --example 04_redis_backend --features redis-backend
 //! ```
 //!
-//! The wire format is JSON-compatible with the Go `RedisStreamBus`:
+//! The wire format is JSON-compatible with the Go `StreamBus`:
 //! each entry is stored as `XADD <topic> * message <json>`.
 
 #[cfg(not(feature = "redis-backend"))]
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
 
     use chrono::Utc;
-    use eventbus_contract::redis_stream::{RedisStreamBus, RedisStreamBusOptions};
+    use eventbus_contract::stream::{StreamBus, StreamBusOptions};
     use eventbus_contract::{
         AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions,
         SubscriptionConfig,
@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conn = client.get_multiplexed_async_connection().await?;
 
     // `from_connection` wraps the connection in a RedisBackend and creates the bus.
-    let bus = RedisStreamBus::from_connection(conn, RedisStreamBusOptions::default())?;
+    let bus = StreamBus::from_connection(conn, StreamBusOptions::default())?;
 
     // -----------------------------------------------------------------------
     // Subscribe
