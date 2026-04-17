@@ -1,5 +1,6 @@
 pub mod dead_letter;
 
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 
@@ -144,7 +145,7 @@ pub struct DeadLetterMessageRecord {
     pub kind: String,
     pub source: String,
     pub headers: Headers,
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
     pub content_type: Option<String>,
     pub event_version: Option<String>,
     pub idempotency_key: Option<String>,

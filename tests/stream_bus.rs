@@ -5,6 +5,7 @@ use std::sync::{
 use std::time::Duration;
 use std::{collections::VecDeque, future::Future, pin::Pin};
 
+use bytes::Bytes;
 use chrono::Utc;
 use eventbus_contract::stream::{
     ClaimedMessage, MemoryStreamBackend, StreamBackend, StreamBus, StreamBusOptions,
@@ -25,7 +26,7 @@ fn message(topic: &str, uid: &str) -> Message {
         source: "test".to_string(),
         occurred_at: Utc::now(),
         headers: Headers::new(),
-        payload: br#"{"ok":true}"#.to_vec(),
+        payload: Bytes::from_static(br#"{"ok":true}"#),
         content_type: None,
         event_version: None,
         idempotency_key: None,

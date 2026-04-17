@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use chrono::Utc;
 use eventbus_contract::{
     AckMode, BackpressurePolicy, ConsumerBalanceMode, DeadLetterDecision, DeadLetterPolicy,
@@ -207,7 +208,7 @@ fn message_with_headers(headers: Headers) -> Message {
         source: "tests".into(),
         occurred_at: Utc::now(),
         headers,
-        payload: vec![],
+        payload: Bytes::new(),
         content_type: None,
         event_version: None,
         idempotency_key: None,

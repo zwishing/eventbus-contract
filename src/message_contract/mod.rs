@@ -142,7 +142,7 @@ mod tests {
             source: "test".into(),
             occurred_at: Utc::now(),
             headers: Headers::new(),
-            payload: vec![],
+            payload: bytes::Bytes::new(),
             content_type: None,
             event_version: None,
             idempotency_key: None,

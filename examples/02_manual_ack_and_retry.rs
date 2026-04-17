@@ -105,7 +105,7 @@ fn sample_message(topic: &str, uid: &str) -> Message {
         source: "order-service".to_string(),
         occurred_at: Utc::now(),
         headers: Headers::new(),
-        payload: br#"{"order_id": 99}"#.to_vec(),
+        payload: bytes::Bytes::from_static(br#"{"order_id": 99}"#),
         content_type: Some("application/json".to_string()),
         event_version: None,
         idempotency_key: None,
