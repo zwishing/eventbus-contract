@@ -32,7 +32,7 @@ pub struct Message {
     pub occurred_at: DateTime<Utc>,
     pub headers: Headers,
     #[serde(with = "crate::serde_bytes")]
-    pub payload: Vec<u8>,
+    pub payload: bytes::Bytes,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

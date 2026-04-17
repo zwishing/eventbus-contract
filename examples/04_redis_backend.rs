@@ -111,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             source: "example".to_string(),
             occurred_at: Utc::now(),
             headers: Headers::new(),
-            payload: br#"{"hello": "world"}"#.to_vec(),
+            payload: bytes::Bytes::from_static(br#"{"hello": "world"}"#),
             content_type: Some("application/json".to_string()),
             event_version: Some("1.0".to_string()),
             idempotency_key: Some(uuid()),

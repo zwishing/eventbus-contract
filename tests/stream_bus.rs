@@ -25,7 +25,7 @@ fn message(topic: &str, uid: &str) -> Message {
         source: "test".to_string(),
         occurred_at: Utc::now(),
         headers: Headers::new(),
-        payload: br#"{"ok":true}"#.to_vec(),
+        payload: bytes::Bytes::from_static(br#"{"ok":true}"#),
         content_type: None,
         event_version: None,
         idempotency_key: None,
