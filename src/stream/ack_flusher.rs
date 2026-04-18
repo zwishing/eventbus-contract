@@ -115,17 +115,16 @@ async fn flush_batch<B: StreamBackend>(
 
     let ids: Vec<String> = buf.iter().map(|r| r.id.clone()).collect();
     let result = backend.ack_many(stream, group, &ids).await;
-    let requests: Vec<AckRequest> = std::mem::take(buf);
 
     match result {
         Ok(()) => {
-            for req in requests {
+            for req in buf.drain(..) {
                 let _ = req.done.send(Ok(()));
             }
         }
         Err(err) => {
             let msg = err.to_string();
-            for req in requests {
+            for req in buf.drain(..) {
                 let _ = req.done.send(Err(EventBusError::Connection(format!(
                     "batched xack on {stream}: {msg}"
                 ))));

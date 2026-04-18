@@ -8,6 +8,7 @@ use tokio::task::JoinHandle;
 
 use crate::{EventBusError, Subscription};
 
+#[must_use = "subscription is idle until bound; call `.close().await` for graceful shutdown"]
 pub struct StreamSubscription {
     name: String,
     closed: AtomicBool,

@@ -52,6 +52,8 @@ pub struct Message {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+#[must_use = "PublishOptions is inert until passed to publish/publish_batch"]
 pub struct PublishOptions {
     /// Blocks the calling task for the specified duration before publishing.
     /// For high-throughput scenarios, consider handling delays externally.

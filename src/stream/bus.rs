@@ -86,6 +86,69 @@ impl Default for StreamBusOptions {
 }
 
 impl StreamBusOptions {
+    /// Constructs options with all defaults. Equivalent to [`Default::default`],
+    /// provided so callers can chain `with_*` methods without importing `Default`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the `XREADGROUP BLOCK` timeout.
+    #[must_use]
+    pub fn with_block_timeout(mut self, v: Duration) -> Self {
+        self.block_timeout = v;
+        self
+    }
+
+    /// Sets how long a pending entry must sit before `XAUTOCLAIM` reclaims it.
+    #[must_use]
+    pub fn with_claim_idle_timeout(mut self, v: Duration) -> Self {
+        self.claim_idle_timeout = v;
+        self
+    }
+
+    /// Sets the `XAUTOCLAIM COUNT` per scan.
+    #[must_use]
+    pub fn with_claim_scan_batch_size(mut self, v: usize) -> Self {
+        self.claim_scan_batch_size = v;
+        self
+    }
+
+    /// Sets the consumer-group start id (`$` = new only, `0` = from history).
+    #[must_use]
+    pub fn with_group_start_id(mut self, v: impl Into<String>) -> Self {
+        self.group_start_id = v.into();
+        self
+    }
+
+    /// Sets the cap on concurrent backend `publish` calls per `publish_batch`.
+    #[must_use]
+    pub fn with_publish_batch_parallelism(mut self, v: usize) -> Self {
+        self.publish_batch_parallelism = v;
+        self
+    }
+
+    /// Sets the maximum number of ack ids per `XACK` command.
+    #[must_use]
+    pub fn with_ack_batch_size(mut self, v: usize) -> Self {
+        self.ack_batch_size = v;
+        self
+    }
+
+    /// Sets the maximum delay before forcing a partial ack batch flush.
+    #[must_use]
+    pub fn with_ack_flush_interval(mut self, v: Duration) -> Self {
+        self.ack_flush_interval = v;
+        self
+    }
+
+    /// Sets how often the reclaim task scans for idle pending entries.
+    #[must_use]
+    pub fn with_reclaim_interval(mut self, v: Duration) -> Self {
+        self.reclaim_interval = v;
+        self
+    }
+
     fn normalize(mut self) -> Result<Self, EventBusError> {
         if self.block_timeout.is_zero() {
             self.block_timeout = Duration::from_secs(2);

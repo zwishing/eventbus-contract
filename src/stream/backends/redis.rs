@@ -120,15 +120,16 @@ impl StreamBackend for RedisBackend {
         {
             Ok(()) => Ok(()),
             Err(err) if is_busygroup(&err) => Ok(()),
-            Err(err) => Err(EventBusError::Connection(format!(
-                "create consumer group for stream {stream}: {err}"
-            ))),
+            Err(err) => Err(EventBusError::source(
+                format!("create consumer group for stream {stream}"),
+                err,
+            )),
         }
     }
 
     async fn publish(&self, stream: &str, message: Message) -> Result<String, EventBusError> {
         let json = serde_json::to_string(&Payload { message })
-            .map_err(|e| EventBusError::Serialization(e.to_string()))?;
+            .map_err(|e| EventBusError::source("serialize publish payload", e))?;
 
         let mut conn = self.conn.clone();
         let id: String = redis::cmd("XADD")
@@ -138,7 +139,7 @@ impl StreamBackend for RedisBackend {
             .arg(&json)
             .query_async(&mut conn)
             .await
-            .map_err(|e| EventBusError::Connection(format!("xadd to {stream}: {e}")))?;
+            .map_err(|e| EventBusError::source(format!("xadd to {stream}"), e))?;
 
         Ok(id)
     }
@@ -172,7 +173,7 @@ impl StreamBackend for RedisBackend {
             .arg(count)
             .query_async(&mut conn)
             .await
-            .map_err(|e| EventBusError::Connection(format!("xautoclaim on {stream}: {e}")))?;
+            .map_err(|e| EventBusError::source(format!("xautoclaim on {stream}"), e))?;
 
         let (next_start, claimed) = parse_autoclaim(raw)?;
         self.reclaim_starts.insert(cursor_key, next_start);
@@ -208,9 +209,10 @@ impl StreamBackend for RedisBackend {
             // Redis returns nil when no new messages are available.
             Err(err) if is_nil_response(&err) => return Ok(Vec::new()),
             Err(err) => {
-                return Err(EventBusError::Connection(format!(
-                    "xreadgroup on {stream}: {err}"
-                )))
+                return Err(EventBusError::source(
+                    format!("xreadgroup on {stream}"),
+                    err,
+                ))
             }
         };
 
@@ -230,7 +232,7 @@ impl StreamBackend for RedisBackend {
             .arg(message_id)
             .query_async(&mut conn)
             .await
-            .map_err(|e| EventBusError::Connection(format!("xack {message_id}: {e}")))?;
+            .map_err(|e| EventBusError::source(format!("xack {message_id}"), e))?;
         Ok(())
     }
 
@@ -257,7 +259,7 @@ impl StreamBackend for RedisBackend {
         let _: i64 = cmd
             .query_async(&mut conn)
             .await
-            .map_err(|e| EventBusError::Connection(format!("xack batch on {stream}: {e}")))?;
+            .map_err(|e| EventBusError::source(format!("xack batch on {stream}"), e))?;
         Ok(())
     }
 }
@@ -276,10 +278,10 @@ fn decode_entry(entry: &StreamId, redelivered: bool) -> Result<ClaimedMessage, E
     })?;
 
     let json: String = FromRedisValue::from_redis_value(val.clone())
-        .map_err(|e| EventBusError::Serialization(format!("read message value: {e}")))?;
+        .map_err(|e| EventBusError::source("read message value", e))?;
 
     let payload: Payload = serde_json::from_str(&json)
-        .map_err(|e| EventBusError::Serialization(format!("decode entry {}: {e}", entry.id)))?;
+        .map_err(|e| EventBusError::source(format!("decode entry {}", entry.id), e))?;
 
     let attempt = retry_attempt(&payload.message) + 1;
     let now = Utc::now();
@@ -311,11 +313,11 @@ fn parse_autoclaim(raw: Value) -> Result<(String, Vec<ClaimedMessage>), EventBus
         }
     };
     let next_start: String = FromRedisValue::from_redis_value(items[0].clone())
-        .map_err(|err| EventBusError::Serialization(format!("decode XAUTOCLAIM cursor: {err}")))?;
+        .map_err(|err| EventBusError::source("decode XAUTOCLAIM cursor", err))?;
 
     // items[1] has the same format as XRANGE output → parse as StreamRangeReply.
     let range: StreamRangeReply = FromRedisValue::from_redis_value(items[1].clone())
-        .map_err(|err| EventBusError::Serialization(format!("decode XAUTOCLAIM entries: {err}")))?;
+        .map_err(|err| EventBusError::source("decode XAUTOCLAIM entries", err))?;
 
     let claimed = range
         .ids
