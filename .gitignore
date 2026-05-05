@@ -1,2 +1,4 @@
 /target
 .omx/
+.idea/
+.DS_Store
