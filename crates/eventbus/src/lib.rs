@@ -23,8 +23,7 @@ pub use eventbus_integration as integration;
 pub mod prelude {
     //! Common imports for users of the event bus.
     pub use eventbus_core::{
-        Bus, Codec, Delivery, DeliveryGuarantee, EventBusError, Handler,
-        Message, PublishOptions, Publisher, Subscriber, Subscription,
-        SubscriptionConfig, Topic,
+        Bus, Codec, Delivery, DeliveryGuarantee, EventBusError, Handler, Message, PublishOptions,
+        Publisher, Subscriber, Subscription, SubscriptionConfig, Topic,
     };
 }
