@@ -6,7 +6,7 @@ mod delivery;
 mod observer;
 mod subscription;
 
-pub use backend::{ClaimedMessage, StreamBackend};
+pub use backend::{ClaimedMessage, FetchedEntry, StreamBackend};
 pub use backends::MemoryStreamBackend;
 #[cfg(feature = "redis-backend")]
 pub use backends::RedisBackend;

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, Notify};
 
 use crate::{
-    stream::backend::{ClaimedMessage, StreamBackend},
+    stream::backend::{ClaimedMessage, FetchedEntry, StreamBackend},
     EventBusError, Message, PartialDeliveryState,
 };
 
@@ -101,7 +101,7 @@ impl StreamBackend for MemoryStreamBackend {
         consumer: &str,
         min_idle: Duration,
         count: usize,
-    ) -> Result<Vec<ClaimedMessage>, EventBusError> {
+    ) -> Result<Vec<FetchedEntry>, EventBusError> {
         let now = Utc::now();
         let instant = Instant::now();
         let mut state = self.state.lock().await;
@@ -131,7 +131,7 @@ impl StreamBackend for MemoryStreamBackend {
                 pending.last_delivered_at = instant;
                 pending.redelivered = true;
 
-                claimed.push(ClaimedMessage {
+                claimed.push(FetchedEntry::Decoded(ClaimedMessage {
                     id,
                     message: Arc::clone(&pending.message),
                     state: PartialDeliveryState {
@@ -140,7 +140,7 @@ impl StreamBackend for MemoryStreamBackend {
                         last_received: pending.last_received,
                         redelivered: pending.redelivered,
                     },
-                });
+                }));
             }
         }
 
@@ -154,7 +154,7 @@ impl StreamBackend for MemoryStreamBackend {
         consumer: &str,
         count: usize,
         timeout: Duration,
-    ) -> Result<Vec<ClaimedMessage>, EventBusError> {
+    ) -> Result<Vec<FetchedEntry>, EventBusError> {
         if count == 0 {
             return Ok(Vec::new());
         }
@@ -214,7 +214,7 @@ impl MemoryStreamBackend {
         group: &str,
         consumer: &str,
         count: usize,
-    ) -> Result<Vec<ClaimedMessage>, EventBusError> {
+    ) -> Result<Vec<FetchedEntry>, EventBusError> {
         let now = Utc::now();
         let instant = Instant::now();
         let mut state = self.state.lock().await;
@@ -252,7 +252,7 @@ impl MemoryStreamBackend {
                 },
             );
 
-            claimed.push(ClaimedMessage {
+            claimed.push(FetchedEntry::Decoded(ClaimedMessage {
                 id: entry.id,
                 message,
                 state: PartialDeliveryState {
@@ -261,7 +261,7 @@ impl MemoryStreamBackend {
                     last_received: now,
                     redelivered: false,
                 },
-            });
+            }));
         }
 
         Ok(claimed)

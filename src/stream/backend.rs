@@ -12,6 +12,25 @@ pub struct ClaimedMessage {
     pub state: PartialDeliveryState,
 }
 
+/// One result per Redis Stream entry returned from `read_new` / `reclaim_idle`.
+///
+/// Backends report decode failures **per entry** instead of poisoning the
+/// whole batch with a single `Result<Vec<_>, _>` short-circuit. Otherwise a
+/// single corrupt PEL entry would loop forever:
+///
+/// - `XREADGROUP` already moved the entry into the consumer's PEL.
+/// - The bus would receive `Err`, log/observe, back off, retry.
+/// - On the next cycle the same entry would re-decode → fail again.
+///
+/// With per-entry results the bus can ack the bad entry (so it leaves the
+/// PEL), publish a synthetic dead-letter envelope (when `dead_letter_topic`
+/// is configured), and surface the error to the [`crate::ErrorObserver`].
+#[derive(Debug)]
+pub enum FetchedEntry {
+    Decoded(ClaimedMessage),
+    Malformed { id: String, error: EventBusError },
+}
+
 pub trait StreamBackend: Send + Sync + 'static {
     fn create_group(
         &self,
@@ -33,7 +52,7 @@ pub trait StreamBackend: Send + Sync + 'static {
         consumer: &str,
         min_idle: Duration,
         count: usize,
-    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send;
+    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send;
 
     fn read_new(
         &self,
@@ -42,7 +61,7 @@ pub trait StreamBackend: Send + Sync + 'static {
         consumer: &str,
         count: usize,
         timeout: Duration,
-    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send;
+    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send;
 
     fn ack(
         &self,

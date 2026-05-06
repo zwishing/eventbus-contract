@@ -42,4 +42,6 @@ pub use outbox::{
 };
 #[cfg(feature = "redis-backend")]
 pub use stream::RedisBackend;
-pub use stream::{ErrorObserver, ErrorScope, MemoryStreamBackend, StreamBus, StreamBusOptions};
+pub use stream::{
+    ErrorObserver, ErrorScope, FetchedEntry, MemoryStreamBackend, StreamBus, StreamBusOptions,
+};

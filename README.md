@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             consumer_group: "my-service".to_string(),
             consumer_name: "worker-1".to_string(),
             ack_mode: AckMode::AutoOnHandlerSuccess,
-            concurrency: 1,
+            max_in_flight: 1,
             ..Default::default()
         },
         MyHandler,
@@ -103,14 +103,16 @@ indicate programming bugs.
 
 ## Competing consumers (horizontal scaling)
 
-Set `concurrency > 1` to allow multiple handler tasks to process messages
+Set `max_in_flight > 1` to allow multiple handler tasks to process messages
 concurrently within the same consumer group. Each message is delivered to
-exactly one handler execution.
+exactly one handler execution. `max_pending_acks` is an advisory ceiling on
+the in-flight + waiting-for-ack budget; if left at `0` it defaults to
+`2 * max_in_flight`.
 
 ```rust
 SubscriptionConfig {
     consumer_name: "processor".to_string(), // stable consumer identity for this subscriber
-    concurrency: 4,
+    max_in_flight: 4,
     ..Default::default()
 }
 ```
