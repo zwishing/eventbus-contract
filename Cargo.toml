@@ -1,9 +1,12 @@
 [workspace]
 resolver = "2"
-# TODO(Task 1.2): expand members to include eventbus-memory, eventbus-redis,
-# eventbus-outbox, eventbus-integration, and the eventbus facade crate.
 members = [
     "crates/eventbus-core",
+    "crates/eventbus-memory",
+    "crates/eventbus-redis",
+    "crates/eventbus-outbox",
+    "crates/eventbus-integration",
+    "crates/eventbus",
 ]
 
 [workspace.package]

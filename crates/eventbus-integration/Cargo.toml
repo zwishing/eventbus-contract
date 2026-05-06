@@ -1,0 +1,11 @@
+[package]
+name = "eventbus-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "DDD integration-event helpers atop eventbus-core"
+
+[dependencies]
+eventbus-core = { path = "../eventbus-core", version = "0.2.0-alpha.1" }

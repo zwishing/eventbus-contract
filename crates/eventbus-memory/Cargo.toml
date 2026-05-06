@@ -1,0 +1,17 @@
+[package]
+name = "eventbus-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "In-process StreamBackend for testing the event bus"
+
+[features]
+default = ["test-utils"]
+test-utils = []
+
+[dependencies]
+eventbus-core = { path = "../eventbus-core", version = "0.2.0-alpha.1" }
+chrono.workspace = true
+tokio.workspace = true

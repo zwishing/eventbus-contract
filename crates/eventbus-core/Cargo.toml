@@ -10,6 +10,7 @@ description = "Object-safe event bus contract traits and types"
 [features]
 default = []
 redis-backend = ["dep:redis", "dep:serde_json"]
+tracing = ["dep:tracing"]
 
 [dependencies]
 base64.workspace = true
@@ -22,6 +23,7 @@ serde.workspace = true
 serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true
