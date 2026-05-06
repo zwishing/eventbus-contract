@@ -34,6 +34,13 @@ impl StreamSubscription {
         &self.name
     }
 
+    /// Returns `true` until [`StreamSubscription::close`] has been invoked
+    /// (or the subscription was dropped). Useful for control planes that
+    /// need to skip already-shutdown subscriptions without racing on close.
+    pub fn is_running(&self) -> bool {
+        !self.closed.load(Ordering::Acquire)
+    }
+
     fn begin_shutdown(
         &self,
     ) -> Result<Option<JoinHandle<Result<(), EventBusError>>>, EventBusError> {
@@ -69,6 +76,11 @@ impl Subscription for StreamSubscription {
     }
 }
 
+/// Dropping a [`StreamSubscription`] is fire-and-forget: it signals the
+/// background task to exit but does not await it, and **delivery errors
+/// raised after the close signal are silently discarded**. To surface those
+/// errors, call [`StreamSubscription::close`] explicitly and await the
+/// returned `Result`.
 impl Drop for StreamSubscription {
     fn drop(&mut self) {
         if self.closed.swap(true, Ordering::AcqRel) {

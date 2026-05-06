@@ -1,5 +1,6 @@
 #![allow(async_fn_in_trait)]
 
+pub mod codec;
 pub mod consumer;
 pub mod contract;
 pub mod delivery_contract;
@@ -22,8 +23,8 @@ pub use delivery_contract::{DeliveryInspector, DeliveryOutcome, DeliveryState};
 pub use dispatcher::{Config, Dispatcher, DispatcherConfig, Listener, Notification, Notifier};
 pub use error::EventBusError;
 pub use eventbus::{
-    Bus, Codec, Delivery, EventBus, Handler, Headers, Message, PublishOptions, Publisher,
-    Subscriber, Subscription, SubscriptionConfig, Topic,
+    Bus, Codec, Delivery, Handler, Headers, Message, PublishOptions, Publisher, Subscriber,
+    Subscription, SubscriptionConfig, Topic,
 };
 pub use idempotency::{IdempotencyClaim, IdempotencyClaimStore, IdempotencyStore};
 pub use integration::{EventPublisher, IntegrationEvent, MessageFactory};

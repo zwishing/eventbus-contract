@@ -1323,9 +1323,7 @@ async fn retry_exhausted_without_dlq_returns_error() {
             D: Delivery + Send + Sync,
         {
             self.attempts.fetch_add(1, Ordering::SeqCst);
-            let res = delivery
-                .retry(&std::io::Error::other("force-retry"))
-                .await;
+            let res = delivery.retry(&std::io::Error::other("force-retry")).await;
             if let Err(e) = res {
                 *self.last_err.lock().await = Some(e.to_string());
                 self.done.notify_one();
@@ -1362,9 +1360,12 @@ async fn retry_exhausted_without_dlq_returns_error() {
         .await
         .expect("subscribe");
 
-    bus.publish(message("evt.no-dlq", "uid-no-dlq"), PublishOptions::default())
-        .await
-        .expect("publish");
+    bus.publish(
+        message("evt.no-dlq", "uid-no-dlq"),
+        PublishOptions::default(),
+    )
+    .await
+    .expect("publish");
 
     timeout(Duration::from_secs(2), done.notified())
         .await
@@ -1372,7 +1373,9 @@ async fn retry_exhausted_without_dlq_returns_error() {
 
     let err = last_err.lock().await.clone();
     assert!(
-        err.as_deref().unwrap_or_default().contains("dead_letter_topic"),
+        err.as_deref()
+            .unwrap_or_default()
+            .contains("dead_letter_topic"),
         "expected dead_letter_topic error, got: {err:?}"
     );
 
@@ -1412,4 +1415,30 @@ async fn auto_generated_consumer_name_has_random_suffix() {
 
     sub_a.close().await.ok();
     sub_b.close().await.ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subscription_is_running_flips_on_close() {
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(backend, StreamBusOptions::default()).expect("construct bus");
+
+    let (tx, _rx) = mpsc::channel(1);
+    let sub = bus
+        .subscribe(
+            SubscriptionConfig {
+                topic: "evt.is-running".to_string(),
+                consumer_group: "cg.is-running".to_string(),
+                consumer_name: "consumer-1".to_string(),
+                ack_mode: AckMode::AutoOnHandlerSuccess,
+                concurrency: 1,
+                ..Default::default()
+            },
+            AutoAckHandler { tx },
+        )
+        .await
+        .expect("subscribe");
+
+    assert!(sub.is_running());
+    sub.close().await.expect("close");
+    assert!(!sub.is_running());
 }

@@ -141,6 +141,11 @@ pub enum OrderingMode {
 // Consumer balance mode
 // ---------------------------------------------------------------------------
 
+/// How a consumer group distributes messages across consumers.
+///
+/// Backend support varies — `StreamBus` currently implements `Competing`
+/// (Redis Streams consumer-group semantics) and rejects `FanOut` at subscribe
+/// time. New backends may unlock additional modes; check the backend's docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConsumerBalanceMode {
