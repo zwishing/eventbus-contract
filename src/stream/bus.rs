@@ -21,6 +21,10 @@ use super::{
 
 const DEFAULT_PUBLISH_BATCH_PARALLELISM: usize = 32;
 const MAX_BACKOFF_CEILING: Duration = Duration::from_secs(5);
+/// Default cap on a single message payload (4 MiB). Prevents an adversarial or
+/// runaway producer from blowing past Redis Streams' 512 MiB entry limit and
+/// from causing OOM on consumers that allocate before validation.
+const DEFAULT_MAX_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
 type DeliveryTaskResult = Result<(), EventBusError>;
 
@@ -68,6 +72,11 @@ pub struct StreamBusOptions {
     /// Decoupled from `block_timeout` so reclaim latency is predictable
     /// regardless of read polling cadence.
     pub reclaim_interval: Duration,
+    /// Hard cap on a single message's payload, in bytes. Messages that exceed
+    /// this on publish are rejected with `Validation`; messages that exceed
+    /// this on receive are surfaced as `Serialization` and never reach the
+    /// handler. Set to `0` to disable the check (not recommended).
+    pub max_payload_bytes: usize,
 }
 
 impl Default for StreamBusOptions {
@@ -81,6 +90,7 @@ impl Default for StreamBusOptions {
             ack_batch_size: 64,
             ack_flush_interval: Duration::from_millis(2),
             reclaim_interval: Duration::from_millis(500),
+            max_payload_bytes: DEFAULT_MAX_PAYLOAD_BYTES,
         }
     }
 }
@@ -146,6 +156,14 @@ impl StreamBusOptions {
     #[must_use]
     pub fn with_reclaim_interval(mut self, v: Duration) -> Self {
         self.reclaim_interval = v;
+        self
+    }
+
+    /// Sets the maximum payload size accepted by `publish`/`publish_batch`
+    /// and surfaced from incoming messages. `0` disables the check.
+    #[must_use]
+    pub fn with_max_payload_bytes(mut self, v: usize) -> Self {
+        self.max_payload_bytes = v;
         self
     }
 
@@ -244,7 +262,7 @@ impl<B: StreamBackend> StreamBus<B> {
             tokio::time::sleep(delay).await;
         }
 
-        let message = Self::prepare_message(message, options)?;
+        let message = Self::prepare_message(message, options, self.options.max_payload_bytes)?;
 
         let topic = message.topic.clone();
         self.backend.publish(&topic, message).await?;
@@ -254,11 +272,20 @@ impl<B: StreamBackend> StreamBus<B> {
     fn prepare_message(
         mut message: Message,
         options: &PublishOptions,
+        max_payload_bytes: usize,
     ) -> Result<Message, EventBusError> {
         if message.topic.trim().is_empty() {
             return Err(EventBusError::Validation(
                 "message topic is required".into(),
             ));
+        }
+
+        if max_payload_bytes > 0 && message.payload.len() > max_payload_bytes {
+            return Err(EventBusError::Validation(format!(
+                "message payload {} bytes exceeds max_payload_bytes {}",
+                message.payload.len(),
+                max_payload_bytes,
+            )));
         }
 
         for (key, value) in &options.metadata {
@@ -382,11 +409,21 @@ impl<B: StreamBackend> StreamBus<B> {
             }
         }
 
+        // Capture identifiers before releasing the runtime so the backend can
+        // evict any per-consumer cursor cache it kept (e.g., XAUTOCLAIM start).
+        let topic = runtime.config.topic.clone();
+        let group = runtime.config.consumer_group.clone();
+        let consumer = runtime.config.consumer_name.clone();
+
         // Drop all senders so the flusher drains its remaining buffer and exits.
         drop(runtime);
         drop(reclaim_rx);
         let _ = reclaim_handle.await;
         let _ = flusher_handle.await;
+
+        self.backend
+            .forget_consumer(&topic, &group, &consumer)
+            .await;
 
         if let Some(err) = first_delivery_error {
             return Err(err);
@@ -446,9 +483,26 @@ impl<B: StreamBackend> StreamBus<B> {
             claimed.id,
             claimed.message,
             state,
-            config,
+            Arc::clone(&config),
             permit,
         );
+
+        // Post-decode safety net: oversized payloads are routed straight to
+        // dead-letter (when configured) so the user handler never sees them.
+        let max_payload_bytes = self.options.max_payload_bytes;
+        if max_payload_bytes > 0 && delivery.message().payload.len() > max_payload_bytes {
+            let oversize_err = EventBusError::Validation(format!(
+                "received payload {} bytes exceeds max_payload_bytes {}",
+                delivery.message().payload.len(),
+                max_payload_bytes,
+            ));
+            if config.dead_letter_topic.is_some() {
+                delivery.nack(&oversize_err).await?;
+            } else {
+                return Err(oversize_err);
+            }
+            return Ok(());
+        }
 
         if ack_mode == AckMode::AutoOnReceive {
             delivery.ack().await?;
@@ -486,9 +540,10 @@ impl<B: StreamBackend> Publisher for StreamBus<B> {
             tokio::time::sleep(delay).await;
         }
 
+        let max_payload_bytes = self.options.max_payload_bytes;
         let prepared_messages = msgs
             .into_iter()
-            .map(|message| Self::prepare_message(message, &opts))
+            .map(|message| Self::prepare_message(message, &opts, max_payload_bytes))
             .collect::<Result<Vec<_>, _>>()?;
 
         let parallelism = prepared_messages
@@ -567,10 +622,11 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
             ));
         }
         if cfg.consumer_name.trim().is_empty() {
-            cfg.consumer_name = format!(
-                "consumer-{}",
-                Utc::now().timestamp_nanos_opt().unwrap_or_default()
-            );
+            // Append a random suffix because nanosecond resolution is not
+            // unique under container co-launch or clock skew/regression.
+            let nanos = Utc::now().timestamp_nanos_opt().unwrap_or_default();
+            let entropy: u64 = rand::thread_rng().gen();
+            cfg.consumer_name = format!("consumer-{nanos}-{entropy:016x}");
         }
 
         cfg.normalize_and_validate()?;
@@ -608,30 +664,19 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
         // Independent reclaim task — sends batches back to the consume loop.
         let (reclaim_tx, reclaim_rx) = mpsc::channel::<Vec<ClaimedMessage>>(4);
         let reclaim_handle = tokio::spawn({
-            let bus = self.clone();
-            let close_rx = close_rx.clone();
-            let limiter = Arc::clone(&limiter);
-            let config_topic = cfg.topic.clone();
-            let config_group = cfg.consumer_group.clone();
-            let config_consumer = cfg.consumer_name.clone();
-            let claim_idle_timeout = self.options.claim_idle_timeout;
-            let claim_scan_batch_size = self.options.claim_scan_batch_size;
-            let reclaim_interval = self.options.reclaim_interval;
-            async move {
-                reclaim_loop(
-                    bus.backend,
-                    close_rx,
-                    limiter,
-                    reclaim_tx,
-                    config_topic,
-                    config_group,
-                    config_consumer,
-                    claim_idle_timeout,
-                    claim_scan_batch_size,
-                    reclaim_interval,
-                )
-                .await;
-            }
+            let args = ReclaimLoopArgs {
+                backend: Arc::clone(&self.backend),
+                close_rx: close_rx.clone(),
+                limiter: Arc::clone(&limiter),
+                reclaim_tx,
+                topic: cfg.topic.clone(),
+                group: cfg.consumer_group.clone(),
+                consumer: cfg.consumer_name.clone(),
+                claim_idle_timeout: self.options.claim_idle_timeout,
+                claim_scan_batch_size: self.options.claim_scan_batch_size,
+                reclaim_interval: self.options.reclaim_interval,
+            };
+            async move { reclaim_loop(args).await }
         });
 
         let runtime = RuntimeState {
@@ -666,9 +711,9 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
 // Reclaim loop (independent task)
 // ---------------------------------------------------------------------------
 
-async fn reclaim_loop<B: StreamBackend>(
+struct ReclaimLoopArgs<B: StreamBackend> {
     backend: SharedBackend<B>,
-    mut close_rx: watch::Receiver<bool>,
+    close_rx: watch::Receiver<bool>,
     limiter: Arc<Semaphore>,
     reclaim_tx: mpsc::Sender<Vec<ClaimedMessage>>,
     topic: String,
@@ -677,7 +722,22 @@ async fn reclaim_loop<B: StreamBackend>(
     claim_idle_timeout: Duration,
     claim_scan_batch_size: usize,
     reclaim_interval: Duration,
-) {
+}
+
+async fn reclaim_loop<B: StreamBackend>(args: ReclaimLoopArgs<B>) {
+    let ReclaimLoopArgs {
+        backend,
+        mut close_rx,
+        limiter,
+        reclaim_tx,
+        topic,
+        group,
+        consumer,
+        claim_idle_timeout,
+        claim_scan_batch_size,
+        reclaim_interval,
+    } = args;
+
     let mut backoff = BackoffState::new(Duration::from_millis(100));
 
     loop {
@@ -839,6 +899,7 @@ mod tests {
             ack_batch_size: 0,
             ack_flush_interval: Duration::ZERO,
             reclaim_interval: Duration::ZERO,
+            max_payload_bytes: 0,
         }
         .normalize()
         .expect("normalize options");

@@ -13,16 +13,11 @@ pub mod outbox;
 pub mod serde_bytes;
 pub mod stream;
 
-pub mod dead_letter {
-    pub use crate::outbox::dead_letter::*;
-}
-
 pub use consumer::ConsumerMessageRecord;
 pub use contract::{
     AckMode, BackpressurePolicy, ConsumerBalanceMode, DeliveryGuarantee, GuaranteeMatrix,
     OrderingMode, OverflowStrategy, PublishConfirmation, SubscriptionSemantics,
 };
-pub use dead_letter::{DeadLetterDecision, DeadLetterPolicy, DeadLetterReason};
 pub use delivery_contract::{DeliveryInspector, DeliveryOutcome, DeliveryState};
 pub use dispatcher::{Config, Dispatcher, DispatcherConfig, Listener, Notification, Notifier};
 pub use error::EventBusError;
@@ -37,9 +32,10 @@ pub use message_contract::{
     HEADER_EVENT_VERSION, HEADER_IDEMPOTENCY_KEY, HEADER_RETRY_ATTEMPT, HEADER_RETRY_REASON,
     HEADER_TRACE_PARENT, HEADER_TRACE_STATE,
 };
+pub use outbox::dead_letter::{DeadLetterDecision, DeadLetterPolicy, DeadLetterReason};
 pub use outbox::{
     AppendRequest, DeadLetterMessageRecord, OutboxMessageRecord, OutboxRecord, OutboxStatus,
-    OutboxStore, Repository,
+    OutboxStore,
 };
 #[cfg(feature = "redis-backend")]
 pub use stream::RedisBackend;

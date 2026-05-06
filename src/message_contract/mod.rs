@@ -56,6 +56,17 @@ pub struct TraceContext {
 // ---------------------------------------------------------------------------
 // Message extensions
 // ---------------------------------------------------------------------------
+//
+// Typed fields (`content_type`, `event_version`, `idempotency_key`, `trace_uid`,
+// `correlation_uid`) are the single source of truth for in-process accessors.
+// Headers carry the same values for cross-language wire compatibility (the Go
+// `StreamBus` reads them as headers). On receive, [`Message::normalize`] hoists
+// header values into typed fields so consumers always read from the fields.
+//
+// Maximum length for a `traceparent` value (W3C spec allows up to 55 chars but
+// some vendors emit longer; we cap at 255 to bound memory and reject obvious
+// abuse).
+const MAX_TRACEPARENT_LEN: usize = 255;
 
 impl Message {
     pub fn set_schema(&mut self, content_type: &str, event_version: &str) {
@@ -68,26 +79,22 @@ impl Message {
     }
 
     pub fn schema(&self) -> SchemaDescriptor {
-        let content_type = self
-            .content_type
-            .clone()
-            .or_else(|| self.headers.get(HEADER_CONTENT_TYPE).cloned())
-            .unwrap_or_default();
-
-        let event_version = self
-            .event_version
-            .clone()
-            .or_else(|| self.headers.get(HEADER_EVENT_VERSION).cloned())
-            .unwrap_or_default();
-
         SchemaDescriptor {
-            content_type,
-            event_version,
+            content_type: self.content_type.clone().unwrap_or_default(),
+            event_version: self.event_version.clone().unwrap_or_default(),
         }
     }
 
-    pub fn set_trace_context(&mut self, ctx: &TraceContext) {
+    pub fn set_trace_context(
+        &mut self,
+        ctx: &TraceContext,
+    ) -> Result<(), crate::error::EventBusError> {
         if let Some(ref tp) = ctx.trace_parent {
+            if tp.len() > MAX_TRACEPARENT_LEN {
+                return Err(crate::error::EventBusError::Validation(format!(
+                    "traceparent exceeds maximum length of {MAX_TRACEPARENT_LEN}"
+                )));
+            }
             self.headers.insert(HEADER_TRACE_PARENT.into(), tp.clone());
         }
         if let Some(ref ts) = ctx.trace_state {
@@ -98,6 +105,7 @@ impl Message {
         }
         self.trace_uid = ctx.trace_uid.clone();
         self.correlation_uid = ctx.correlation_uid.clone();
+        Ok(())
     }
 
     pub fn trace_context(&self) -> TraceContext {
@@ -117,9 +125,31 @@ impl Message {
     }
 
     pub fn idempotency_key(&self) -> Option<&str> {
-        self.idempotency_key
-            .as_deref()
-            .or_else(|| self.headers.get(HEADER_IDEMPOTENCY_KEY).map(|s| s.as_str()))
+        self.idempotency_key.as_deref()
+    }
+
+    /// Hoist header values into typed fields when the typed field is unset.
+    ///
+    /// Backends call this after deserializing wire-format messages so that
+    /// downstream consumers can rely on the typed fields as the single source
+    /// of truth. This preserves wire compatibility with producers that only
+    /// set headers (e.g., the Go `StreamBus`).
+    pub fn normalize(&mut self) {
+        if self.content_type.is_none() {
+            if let Some(v) = self.headers.get(HEADER_CONTENT_TYPE) {
+                self.content_type = Some(v.clone());
+            }
+        }
+        if self.event_version.is_none() {
+            if let Some(v) = self.headers.get(HEADER_EVENT_VERSION) {
+                self.event_version = Some(v.clone());
+            }
+        }
+        if self.idempotency_key.is_none() {
+            if let Some(v) = self.headers.get(HEADER_IDEMPOTENCY_KEY) {
+                self.idempotency_key = Some(v.clone());
+            }
+        }
     }
 }
 
@@ -174,12 +204,24 @@ mod tests {
             baggage: Some("key=value".into()),
             trace_uid: Some(trace_uid.clone()),
             correlation_uid: Some(correlation_uid.clone()),
-        });
+        })
+        .expect("set_trace_context");
 
         let ctx = msg.trace_context();
         assert_eq!(ctx.trace_parent.as_deref(), Some("00-abc-def-01"));
         assert_eq!(ctx.trace_uid.as_deref(), Some("trace-uid"));
         assert_eq!(ctx.correlation_uid.as_deref(), Some("corr-uid"));
+    }
+
+    #[test]
+    fn set_trace_context_rejects_oversized_traceparent() {
+        let mut msg = test_message();
+        let huge = "a".repeat(MAX_TRACEPARENT_LEN + 1);
+        let res = msg.set_trace_context(&TraceContext {
+            trace_parent: Some(huge),
+            ..Default::default()
+        });
+        assert!(res.is_err());
     }
 
     #[test]
@@ -195,12 +237,44 @@ mod tests {
     }
 
     #[test]
-    fn idempotency_key_falls_back_to_header() {
+    fn idempotency_key_reads_only_typed_field() {
+        // Without `normalize`, a header-only message must NOT leak through —
+        // typed field is the in-process source of truth.
         let mut msg = test_message();
         msg.headers
             .insert(HEADER_IDEMPOTENCY_KEY.into(), "from-header".into());
 
+        assert_eq!(msg.idempotency_key(), None);
+    }
+
+    #[test]
+    fn normalize_hoists_headers_into_typed_fields() {
+        // Backends call `normalize()` at the wire boundary so consumers can
+        // rely on typed fields regardless of which side wrote the wire form.
+        let mut msg = test_message();
+        msg.headers
+            .insert(HEADER_IDEMPOTENCY_KEY.into(), "from-header".into());
+        msg.headers
+            .insert(HEADER_CONTENT_TYPE.into(), "application/json".into());
+        msg.headers.insert(HEADER_EVENT_VERSION.into(), "v2".into());
+
+        msg.normalize();
+
         assert_eq!(msg.idempotency_key(), Some("from-header"));
+        assert_eq!(msg.content_type.as_deref(), Some("application/json"));
+        assert_eq!(msg.event_version.as_deref(), Some("v2"));
+    }
+
+    #[test]
+    fn normalize_does_not_overwrite_explicit_typed_fields() {
+        let mut msg = test_message();
+        msg.idempotency_key = Some("from-field".into());
+        msg.headers
+            .insert(HEADER_IDEMPOTENCY_KEY.into(), "from-header".into());
+
+        msg.normalize();
+
+        assert_eq!(msg.idempotency_key(), Some("from-field"));
     }
 
     #[test]

@@ -235,7 +235,9 @@ impl MemoryStreamBackend {
         group_state.cursor = end;
 
         let mut claimed = Vec::with_capacity(entries.len());
-        for entry in entries {
+        for mut entry in entries {
+            // Match the wire-boundary normalization that real backends do.
+            entry.message.normalize();
             let attempt = retry_attempt(&entry.message) + 1;
             let message = Arc::new(entry.message);
             group_state.pending.insert(

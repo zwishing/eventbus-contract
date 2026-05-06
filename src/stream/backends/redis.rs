@@ -25,6 +25,13 @@ use crate::stream::bus::{StreamBus, StreamBusOptions};
 
 const REDIS_FIELD_MESSAGE: &str = "message";
 
+/// Pre-decode upper bound on the raw JSON envelope size (8 MiB).
+///
+/// Stops adversarial / runaway producers from forcing serde-json to allocate
+/// arbitrarily large structures. Roughly 2× the default 4 MiB payload cap to
+/// account for base64 inflation + JSON framing.
+const MAX_RAW_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+
 /// JSON envelope matching Go's `redisStreamPayload`.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Payload {
@@ -262,6 +269,11 @@ impl StreamBackend for RedisBackend {
             .map_err(|e| EventBusError::source(format!("xack batch on {stream}"), e))?;
         Ok(())
     }
+
+    async fn forget_consumer(&self, stream: &str, group: &str, consumer: &str) {
+        let key: ReclaimCursorKey = (stream.to_string(), group.to_string(), consumer.to_string());
+        self.reclaim_starts.remove(&key);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,8 +292,22 @@ fn decode_entry(entry: &StreamId, redelivered: bool) -> Result<ClaimedMessage, E
     let json: String = FromRedisValue::from_redis_value(val.clone())
         .map_err(|e| EventBusError::source("read message value", e))?;
 
-    let payload: Payload = serde_json::from_str(&json)
+    if json.len() > MAX_RAW_PAYLOAD_BYTES {
+        return Err(EventBusError::Serialization(format!(
+            "entry {} raw payload {} bytes exceeds MAX_RAW_PAYLOAD_BYTES {}",
+            entry.id,
+            json.len(),
+            MAX_RAW_PAYLOAD_BYTES,
+        )));
+    }
+
+    let mut payload: Payload = serde_json::from_str(&json)
         .map_err(|e| EventBusError::source(format!("decode entry {}", entry.id), e))?;
+
+    // Hoist header values into typed fields once, here at the wire boundary,
+    // so consumers can rely on `Message::idempotency_key()` / `schema()` /
+    // `trace_context()` without each call re-reading headers.
+    payload.message.normalize();
 
     let attempt = retry_attempt(&payload.message) + 1;
     let now = Utc::now();
@@ -336,12 +362,19 @@ fn retry_attempt(msg: &Message) -> u32 {
 }
 
 /// Redis returns `ERR BUSYGROUP ...` when a consumer group already exists.
+///
+/// Prefer the typed [`redis::RedisError::code()`] over string matching so a
+/// future redis-rs error-formatting change cannot silently regress this check.
 fn is_busygroup(err: &redis::RedisError) -> bool {
-    err.to_string().contains("BUSYGROUP")
+    err.code() == Some("BUSYGROUP")
 }
 
 /// When XREADGROUP has no new messages Redis returns nil, which surfaces as
 /// an `UnexpectedReturnType` deserialization error against `StreamReadReply`.
+///
+/// `UnexpectedReturnType` can also arise from genuine deserialization bugs;
+/// callers should make sure they reach this check only on `XREADGROUP` paths
+/// where a nil reply is the expected idle-empty signal.
 fn is_nil_response(err: &redis::RedisError) -> bool {
     matches!(err.kind(), redis::ErrorKind::UnexpectedReturnType)
 }

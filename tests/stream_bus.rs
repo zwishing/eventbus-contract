@@ -1285,3 +1285,131 @@ async fn auto_ack_uses_batched_xack() {
         "flusher should coalesce: {ack_many_calls} calls for {TOTAL} messages is not batching"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publish_rejects_oversize_payload() {
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(
+        backend.clone(),
+        StreamBusOptions {
+            max_payload_bytes: 16,
+            ..Default::default()
+        },
+    )
+    .expect("construct bus");
+
+    let mut msg = message("evt.size", "uid-too-big");
+    msg.payload = bytes::Bytes::from(vec![0u8; 32]);
+
+    let err = bus
+        .publish(msg, PublishOptions::default())
+        .await
+        .expect_err("should reject oversize payload");
+    assert!(matches!(err, EventBusError::Validation(_)));
+    assert_eq!(backend.stream_len("evt.size").await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_exhausted_without_dlq_returns_error() {
+    struct AlwaysRetryHandler {
+        attempts: Arc<AtomicUsize>,
+        last_err: Arc<Mutex<Option<String>>>,
+        done: Arc<Notify>,
+    }
+
+    impl Handler for AlwaysRetryHandler {
+        async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
+        where
+            D: Delivery + Send + Sync,
+        {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            let res = delivery
+                .retry(&std::io::Error::other("force-retry"))
+                .await;
+            if let Err(e) = res {
+                *self.last_err.lock().await = Some(e.to_string());
+                self.done.notify_one();
+                return Err(e);
+            }
+            Ok(())
+        }
+    }
+
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let last_err = Arc::new(Mutex::new(None::<String>));
+    let done = Arc::new(Notify::new());
+    let sub = bus
+        .subscribe(
+            SubscriptionConfig {
+                topic: "evt.no-dlq".to_string(),
+                consumer_group: "cg.no-dlq".to_string(),
+                consumer_name: "consumer-1".to_string(),
+                ack_mode: AckMode::Manual,
+                concurrency: 1,
+                max_retry: 1,
+                // Intentionally no dead_letter_topic — used to silently ack.
+                ..Default::default()
+            },
+            AlwaysRetryHandler {
+                attempts: attempts.clone(),
+                last_err: last_err.clone(),
+                done: Arc::clone(&done),
+            },
+        )
+        .await
+        .expect("subscribe");
+
+    bus.publish(message("evt.no-dlq", "uid-no-dlq"), PublishOptions::default())
+        .await
+        .expect("publish");
+
+    timeout(Duration::from_secs(2), done.notified())
+        .await
+        .expect("retry rejection surfaced");
+
+    let err = last_err.lock().await.clone();
+    assert!(
+        err.as_deref().unwrap_or_default().contains("dead_letter_topic"),
+        "expected dead_letter_topic error, got: {err:?}"
+    );
+
+    sub.close().await.ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_generated_consumer_name_has_random_suffix() {
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(backend, StreamBusOptions::default()).expect("construct bus");
+
+    let cfg = || SubscriptionConfig {
+        topic: "evt.cn-rand".to_string(),
+        consumer_group: "cg.cn-rand".to_string(),
+        consumer_name: String::new(),
+        ack_mode: AckMode::AutoOnHandlerSuccess,
+        concurrency: 1,
+        ..Default::default()
+    };
+
+    let (tx_a, _rx_a) = mpsc::channel(1);
+    let (tx_b, _rx_b) = mpsc::channel(1);
+    let sub_a = bus
+        .subscribe(cfg(), AutoAckHandler { tx: tx_a })
+        .await
+        .expect("subscribe a");
+    let sub_b = bus
+        .subscribe(cfg(), AutoAckHandler { tx: tx_b })
+        .await
+        .expect("subscribe b");
+
+    assert_ne!(
+        sub_a.name(),
+        sub_b.name(),
+        "auto-generated consumer names must be unique even at high spawn rate"
+    );
+
+    sub_a.close().await.ok();
+    sub_b.close().await.ok();
+}

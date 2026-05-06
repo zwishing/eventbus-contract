@@ -75,6 +75,23 @@ pub trait StreamBackend: Send + Sync + 'static {
             Ok(())
         }
     }
+
+    /// Drop any per-(stream, group, consumer) state cached inside the backend
+    /// (e.g., XAUTOCLAIM cursors). Called by [`StreamBus`] on subscription
+    /// shutdown so backends do not accumulate cursor entries indefinitely
+    /// under churn (auto-generated consumer names, restarting pods, etc.).
+    ///
+    /// The default impl is a no-op; backends without per-consumer state can
+    /// ignore it.
+    #[allow(unused_variables)]
+    fn forget_consumer(
+        &self,
+        stream: &str,
+        group: &str,
+        consumer: &str,
+    ) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 }
 
 pub(crate) type SharedBackend<B> = Arc<B>;

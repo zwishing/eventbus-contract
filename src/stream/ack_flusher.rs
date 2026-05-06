@@ -113,19 +113,26 @@ async fn flush_batch<B: StreamBackend>(
         return;
     }
 
-    let ids: Vec<String> = buf.iter().map(|r| r.id.clone()).collect();
-    let result = backend.ack_many(stream, group, &ids).await;
+    // Move IDs out of each request to avoid the per-ack `String` clone — the
+    // request is consumed in the same batch anyway, and we still have the
+    // oneshot `done` channel to reply on.
+    let mut ids: Vec<String> = Vec::with_capacity(buf.len());
+    let mut dones = Vec::with_capacity(buf.len());
+    for req in buf.drain(..) {
+        ids.push(req.id);
+        dones.push(req.done);
+    }
 
-    match result {
+    match backend.ack_many(stream, group, &ids).await {
         Ok(()) => {
-            for req in buf.drain(..) {
-                let _ = req.done.send(Ok(()));
+            for done in dones {
+                let _ = done.send(Ok(()));
             }
         }
         Err(err) => {
             let msg = err.to_string();
-            for req in buf.drain(..) {
-                let _ = req.done.send(Err(EventBusError::Connection(format!(
+            for done in dones {
+                let _ = done.send(Err(EventBusError::Connection(format!(
                     "batched xack on {stream}: {msg}"
                 ))));
             }

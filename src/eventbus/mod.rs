@@ -120,6 +120,16 @@ impl PublishOptions {
         self
     }
 
+    pub fn with_expected_content_type(mut self, content_type: impl Into<String>) -> Self {
+        self.expected_content_type = Some(content_type.into());
+        self
+    }
+
+    pub fn with_expected_event_version(mut self, version: impl Into<String>) -> Self {
+        self.expected_event_version = Some(version.into());
+        self
+    }
+
     pub fn validate(&self) -> Result<(), EventBusError> {
         if self.require_ordered_key
             && self
