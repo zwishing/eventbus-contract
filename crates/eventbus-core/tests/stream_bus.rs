@@ -6,11 +6,11 @@ use std::time::Duration;
 use std::{collections::VecDeque, future::Future, pin::Pin};
 
 use chrono::Utc;
-use eventbus_contract::stream::{
+use eventbus_core::stream::{
     ClaimedMessage, ErrorObserver, ErrorScope, FetchedEntry, MemoryStreamBackend, StreamBackend,
     StreamBus, StreamBusOptions,
 };
-use eventbus_contract::{
+use eventbus_core::{
     AckMode, Delivery, EventBusError, Handler, Headers, Message, PartialDeliveryState,
     PublishOptions, SubscriptionConfig,
 };

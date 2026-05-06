@@ -1,5 +1,5 @@
 use chrono::Utc;
-use eventbus_contract::{
+use eventbus_core::{
     AckMode, BackpressurePolicy, ConsumerBalanceMode, DeadLetterDecision, DeadLetterPolicy,
     DeadLetterReason, Delivery, DeliveryGuarantee, DeliveryInspector, DeliveryOutcome,
     DeliveryState, DispatcherConfig, GuaranteeMatrix, Headers, IdempotencyClaim,
@@ -113,7 +113,7 @@ fn root_exports_idempotency_claim_contracts() {
         async fn claim(
             &self,
             _claim: IdempotencyClaim,
-        ) -> Result<bool, eventbus_contract::EventBusError> {
+        ) -> Result<bool, eventbus_core::EventBusError> {
             Ok(true)
         }
 
@@ -121,7 +121,7 @@ fn root_exports_idempotency_claim_contracts() {
             &self,
             _consumer_group: &str,
             _message_uid: &str,
-        ) -> Result<(), eventbus_contract::EventBusError> {
+        ) -> Result<(), eventbus_core::EventBusError> {
             Ok(())
         }
 
@@ -129,7 +129,7 @@ fn root_exports_idempotency_claim_contracts() {
             &self,
             _consumer_group: &str,
             _message_uid: &str,
-        ) -> Result<(), eventbus_contract::EventBusError> {
+        ) -> Result<(), eventbus_core::EventBusError> {
             Ok(())
         }
     }
@@ -156,7 +156,7 @@ fn delivery_trait_exposes_delivery_inspection() {
     struct DeliveryWithInspection;
 
     impl DeliveryInspector for DeliveryWithInspection {
-        async fn state(&self) -> Result<DeliveryState, eventbus_contract::EventBusError> {
+        async fn state(&self) -> Result<DeliveryState, eventbus_core::EventBusError> {
             Ok(DeliveryState {
                 attempt: 1,
                 max_attempt: 3,
@@ -172,21 +172,21 @@ fn delivery_trait_exposes_delivery_inspection() {
             panic!("test helper does not expose a message reference")
         }
 
-        async fn ack(&self) -> Result<(), eventbus_contract::EventBusError> {
+        async fn ack(&self) -> Result<(), eventbus_core::EventBusError> {
             Ok(())
         }
 
         async fn nack(
             &self,
             _reason: &(dyn std::error::Error + Send + Sync),
-        ) -> Result<(), eventbus_contract::EventBusError> {
+        ) -> Result<(), eventbus_core::EventBusError> {
             Ok(())
         }
 
         async fn retry(
             &self,
             _reason: &(dyn std::error::Error + Send + Sync),
-        ) -> Result<(), eventbus_contract::EventBusError> {
+        ) -> Result<(), eventbus_core::EventBusError> {
             Ok(())
         }
     }

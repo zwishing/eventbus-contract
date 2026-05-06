@@ -28,8 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
 
     use chrono::Utc;
-    use eventbus_contract::stream::{StreamBus, StreamBusOptions};
-    use eventbus_contract::{
+    use eventbus_core::stream::{StreamBus, StreamBusOptions};
+    use eventbus_core::{
         AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions,
         SubscriptionConfig,
     };

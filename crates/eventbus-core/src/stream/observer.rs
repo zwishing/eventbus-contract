@@ -9,8 +9,8 @@
 //!
 //! ```rust,no_run
 //! use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
-//! use eventbus_contract::{EventBusError, ErrorScope, ErrorObserver};
-//! use eventbus_contract::stream::StreamBusOptions;
+//! use eventbus_core::{EventBusError, ErrorScope, ErrorObserver};
+//! use eventbus_core::stream::StreamBusOptions;
 //!
 //! struct Counter(AtomicU64);
 //!

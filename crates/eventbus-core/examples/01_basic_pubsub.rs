@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use eventbus_contract::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
-use eventbus_contract::{
+use eventbus_core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
+use eventbus_core::{
     AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig,
 };
 use tokio::sync::mpsc;

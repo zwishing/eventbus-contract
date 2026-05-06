@@ -2,7 +2,7 @@
 //!
 //! Enable with the `redis-backend` cargo feature:
 //! ```toml
-//! eventbus-contract = { path = "...", features = ["redis-backend"] }
+//! eventbus-core = { path = "...", features = ["redis-backend"] }
 //! ```
 //!
 //! Wire format is compatible with the Go `StreamBus` — messages are
@@ -64,7 +64,7 @@ const MAX_RAW_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 ///
 /// ```rust,no_run
 /// use std::sync::Arc;
-/// use eventbus_contract::stream::{RedisBackend, StreamBus, StreamBusOptions};
+/// use eventbus_core::stream::{RedisBackend, StreamBus, StreamBusOptions};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = redis::Client::open("redis://127.0.0.1/")?;
