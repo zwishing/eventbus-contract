@@ -14,11 +14,13 @@ use crate::{
 
 use super::{
     ack_flusher::{self, AckRequest},
-    backend::{ClaimedMessage, SharedBackend, StreamBackend},
+    backend::{ClaimedMessage, FetchedEntry, SharedBackend, StreamBackend},
     delivery::StreamDelivery,
     observer::{ErrorObserver, ErrorScope},
     subscription::StreamSubscription,
 };
+
+use crate::HEADER_DEAD_LETTER_REASON;
 
 const DEFAULT_PUBLISH_BATCH_PARALLELISM: usize = 32;
 const MAX_BACKOFF_CEILING: Duration = Duration::from_secs(5);
@@ -333,7 +335,7 @@ impl<B: StreamBackend> StreamBus<B> {
         self,
         mut close_rx: watch::Receiver<bool>,
         runtime: RuntimeState<H>,
-        mut reclaim_rx: mpsc::Receiver<Vec<ClaimedMessage>>,
+        mut reclaim_rx: mpsc::Receiver<Vec<FetchedEntry>>,
         flusher_handle: JoinHandle<()>,
         reclaim_handle: JoinHandle<()>,
     ) -> Result<(), EventBusError>
@@ -468,7 +470,7 @@ impl<B: StreamBackend> StreamBus<B> {
     async fn spawn_messages<H>(
         &self,
         tasks: &mut JoinSet<DeliveryTaskResult>,
-        messages: Vec<ClaimedMessage>,
+        entries: Vec<FetchedEntry>,
         runtime: &RuntimeState<H>,
     ) -> Result<(), EventBusError>
     where
@@ -483,23 +485,84 @@ impl<B: StreamBackend> StreamBus<B> {
         //      consumer of the limiter), and
         //   2. surface a loud `Internal` error if the invariant is ever
         //      regressed in the future, instead of silently deadlocking.
-        for claimed in messages {
-            let permit = runtime.limiter.clone().try_acquire_owned().map_err(|err| {
-                EventBusError::Internal(format!(
-                    "in-flight limiter exhausted unexpectedly while spawning \
-                         delivery: {err}"
-                ))
-            })?;
-            let bus = self.clone();
-            let config = Arc::clone(&runtime.config);
-            let handler = Arc::clone(&runtime.handler);
-            let ack_tx = runtime.ack_tx.clone();
-            tasks.spawn(async move {
-                bus.process_single_message(config, handler, claimed, permit, ack_tx)
-                    .await
-            });
+        for entry in entries {
+            match entry {
+                FetchedEntry::Decoded(claimed) => {
+                    let permit = runtime.limiter.clone().try_acquire_owned().map_err(|err| {
+                        EventBusError::Internal(format!(
+                            "in-flight limiter exhausted unexpectedly while spawning \
+                                 delivery: {err}"
+                        ))
+                    })?;
+                    let bus = self.clone();
+                    let config = Arc::clone(&runtime.config);
+                    let handler = Arc::clone(&runtime.handler);
+                    let ack_tx = runtime.ack_tx.clone();
+                    tasks.spawn(async move {
+                        bus.process_single_message(config, handler, claimed, permit, ack_tx)
+                            .await
+                    });
+                }
+                FetchedEntry::Malformed { id, error } => {
+                    self.handle_malformed_entry(&runtime.config, id, error)
+                        .await;
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Surface a malformed PEL entry: observe, route to dead-letter when one
+    /// is configured, and ack so the entry leaves Redis' pending list. Without
+    /// this, `XREADGROUP` having already moved the entry into PEL means
+    /// reclaim would re-decode + re-fail forever (poison pill).
+    async fn handle_malformed_entry(
+        &self,
+        config: &SubscriptionConfig,
+        id: String,
+        error: EventBusError,
+    ) {
+        if let Some(obs) = self.options.error_observer.as_ref() {
+            obs.on_error(ErrorScope::Read, &error);
+        }
+
+        if let Some(dlq) = config.dead_letter_topic.as_deref() {
+            let mut headers = std::collections::HashMap::new();
+            headers.insert(HEADER_DEAD_LETTER_REASON.to_string(), error.to_string());
+            let envelope = Message {
+                uid: format!("malformed-{id}"),
+                topic: dlq.to_string(),
+                key: id.clone(),
+                kind: "eventbus.malformed".into(),
+                source: config.topic.clone(),
+                occurred_at: Utc::now(),
+                headers,
+                payload: bytes::Bytes::new(),
+                content_type: None,
+                event_version: None,
+                idempotency_key: None,
+                expires_at: None,
+                trace_uid: None,
+                correlation_uid: None,
+            };
+            if let Err(err) = self.backend.publish(dlq, envelope).await {
+                if let Some(obs) = self.options.error_observer.as_ref() {
+                    obs.on_error(ErrorScope::Read, &err);
+                }
+                // If the DLQ publish fails we still want the original entry
+                // out of the PEL — fall through to ack.
+            }
+        }
+
+        if let Err(err) = self
+            .backend
+            .ack(&config.topic, &config.consumer_group, &id)
+            .await
+        {
+            if let Some(obs) = self.options.error_observer.as_ref() {
+                obs.on_error(ErrorScope::AckFlush, &err);
+            }
+        }
     }
 
     async fn process_single_message<H>(
@@ -513,7 +576,10 @@ impl<B: StreamBackend> StreamBus<B> {
     where
         H: Handler + Send + Sync + 'static,
     {
-        let max_attempt = config.max_retry.max(1) as u32;
+        // `max_retry` is the number of *retries*; the initial delivery
+        // doesn't count, so the attempt budget is `max_retry + 1`. With
+        // `max_retry = 0`, the first failure goes straight to DLQ.
+        let max_attempt = (config.max_retry as u32).saturating_add(1);
         let state = claimed.state.with_max_attempt(max_attempt);
 
         let ack_mode = config.ack_mode;
@@ -682,7 +748,15 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
             .await?;
 
         let (close_tx, close_rx) = watch::channel(false);
-        let limit = cfg.max_pending_acks.max(cfg.max_in_flight.max(1));
+        // The handler-concurrency limiter is sized by `max_in_flight` *only*.
+        // `max_pending_acks` previously inflated this, allowing the loop to
+        // read up to 2× the documented in-flight cap (default
+        // `max_pending_acks = 2 * max_in_flight`). It is still validated by
+        // `BackpressurePolicy` as an advisory upper bound, but does not
+        // control the limiter — every in-flight handler holds its permit
+        // through ack flush, so `max_in_flight` already bounds the
+        // handler+pending-ack pipeline.
+        let limit = cfg.max_in_flight.max(1);
         let consumer_name = cfg.consumer_name.clone();
 
         let stream = cfg.topic.clone();
@@ -699,7 +773,7 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
         let limiter = Arc::new(Semaphore::new(limit));
 
         // Independent reclaim task — sends batches back to the consume loop.
-        let (reclaim_tx, reclaim_rx) = mpsc::channel::<Vec<ClaimedMessage>>(4);
+        let (reclaim_tx, reclaim_rx) = mpsc::channel::<Vec<FetchedEntry>>(4);
         let reclaim_handle = tokio::spawn({
             let args = ReclaimLoopArgs {
                 backend: Arc::clone(&self.backend),
@@ -753,7 +827,7 @@ struct ReclaimLoopArgs<B: StreamBackend> {
     backend: SharedBackend<B>,
     close_rx: watch::Receiver<bool>,
     limiter: Arc<Semaphore>,
-    reclaim_tx: mpsc::Sender<Vec<ClaimedMessage>>,
+    reclaim_tx: mpsc::Sender<Vec<FetchedEntry>>,
     topic: String,
     group: String,
     consumer: String,

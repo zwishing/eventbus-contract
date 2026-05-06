@@ -40,7 +40,7 @@ use redis::{FromRedisValue, Value};
 use crate::codec::JsonCodec;
 use crate::{Codec, EventBusError, Message, PartialDeliveryState, HEADER_RETRY_ATTEMPT};
 
-use crate::stream::backend::{ClaimedMessage, StreamBackend};
+use crate::stream::backend::{ClaimedMessage, FetchedEntry, StreamBackend};
 use crate::stream::bus::{StreamBus, StreamBusOptions};
 
 const REDIS_FIELD_MESSAGE: &str = "message";
@@ -187,7 +187,7 @@ impl StreamBackend for RedisBackend {
         consumer: &str,
         min_idle: Duration,
         count: usize,
-    ) -> Result<Vec<ClaimedMessage>, EventBusError> {
+    ) -> Result<Vec<FetchedEntry>, EventBusError> {
         let mut conn = self.conn.clone();
         let cursor_key: ReclaimCursorKey =
             (stream.to_string(), group.to_string(), consumer.to_string());
@@ -223,7 +223,7 @@ impl StreamBackend for RedisBackend {
         consumer: &str,
         count: usize,
         timeout: Duration,
-    ) -> Result<Vec<ClaimedMessage>, EventBusError> {
+    ) -> Result<Vec<FetchedEntry>, EventBusError> {
         let mut conn = self.conn.clone();
 
         let result: Result<StreamReadReply, _> = redis::cmd("XREADGROUP")
@@ -252,12 +252,15 @@ impl StreamBackend for RedisBackend {
             }
         };
 
-        reply
+        // Per-entry decoding: a single corrupt payload becomes a `Malformed`
+        // entry rather than poisoning the whole batch (and looping forever
+        // because XREADGROUP already moved the entry into the PEL).
+        Ok(reply
             .keys
             .iter()
             .flat_map(|k| k.ids.iter())
             .map(|entry| decode_entry(entry, false, self.codec.as_ref()))
-            .collect::<Result<Vec<_>, _>>()
+            .collect())
     }
 
     async fn ack(&self, stream: &str, group: &str, message_id: &str) -> Result<(), EventBusError> {
@@ -309,41 +312,57 @@ impl StreamBackend for RedisBackend {
 // Parsing helpers
 // ---------------------------------------------------------------------------
 
-/// Decode a single Redis Stream entry (`StreamId`) into a `ClaimedMessage`.
+/// Decode a single Redis Stream entry (`StreamId`) into a `FetchedEntry`.
 ///
-/// Pulls the codec-encoded payload out of the `message` field, enforces the
-/// pre-decode raw-size guard, then delegates to the codec.
-fn decode_entry(
-    entry: &StreamId,
-    redelivered: bool,
-    codec: &dyn Codec,
-) -> Result<ClaimedMessage, EventBusError> {
-    let val = entry.map.get(REDIS_FIELD_MESSAGE).ok_or_else(|| {
-        EventBusError::Serialization(format!(
-            "entry {} missing '{REDIS_FIELD_MESSAGE}'",
-            entry.id
-        ))
-    })?;
+/// On success returns `Decoded(ClaimedMessage)`; on any per-entry failure
+/// (missing field, oversize raw payload, codec error) returns
+/// `Malformed { id, error }` so the bus layer can ack + DLQ + observe
+/// instead of poisoning the whole batch.
+fn decode_entry(entry: &StreamId, redelivered: bool, codec: &dyn Codec) -> FetchedEntry {
+    let id = entry.id.clone();
+
+    let Some(val) = entry.map.get(REDIS_FIELD_MESSAGE) else {
+        return FetchedEntry::Malformed {
+            id: id.clone(),
+            error: EventBusError::Serialization(format!(
+                "entry {id} missing '{REDIS_FIELD_MESSAGE}'"
+            )),
+        };
+    };
 
     // Codecs may produce either text or binary; accept both Redis Value shapes.
     let bytes: Vec<u8> = match val {
         Value::BulkString(b) => b.clone(),
         Value::SimpleString(s) => s.as_bytes().to_vec(),
-        other => FromRedisValue::from_redis_value(other.clone())
-            .map(|s: String| s.into_bytes())
-            .map_err(|e| EventBusError::source("read message value", e))?,
+        other => match FromRedisValue::from_redis_value(other.clone()) {
+            Ok(s) => {
+                let s: String = s;
+                s.into_bytes()
+            }
+            Err(e) => {
+                return FetchedEntry::Malformed {
+                    id,
+                    error: EventBusError::source("read message value", e),
+                };
+            }
+        },
     };
 
     if bytes.len() > MAX_RAW_PAYLOAD_BYTES {
-        return Err(EventBusError::Serialization(format!(
-            "entry {} raw payload {} bytes exceeds MAX_RAW_PAYLOAD_BYTES {}",
-            entry.id,
-            bytes.len(),
-            MAX_RAW_PAYLOAD_BYTES,
-        )));
+        return FetchedEntry::Malformed {
+            id: id.clone(),
+            error: EventBusError::Serialization(format!(
+                "entry {id} raw payload {} bytes exceeds MAX_RAW_PAYLOAD_BYTES {}",
+                bytes.len(),
+                MAX_RAW_PAYLOAD_BYTES,
+            )),
+        };
     }
 
-    let mut message = codec.decode(&bytes)?;
+    let mut message = match codec.decode(&bytes) {
+        Ok(m) => m,
+        Err(error) => return FetchedEntry::Malformed { id, error },
+    };
 
     // Hoist header values into typed fields once, here at the wire boundary,
     // so consumers can rely on `Message::idempotency_key()` / `schema()` /
@@ -353,8 +372,8 @@ fn decode_entry(
     let attempt = retry_attempt(&message) + 1;
     let now = Utc::now();
 
-    Ok(ClaimedMessage {
-        id: entry.id.clone(),
+    FetchedEntry::Decoded(ClaimedMessage {
+        id,
         message: Arc::new(message),
         state: PartialDeliveryState {
             attempt,
@@ -371,7 +390,7 @@ fn decode_entry(
 fn parse_autoclaim(
     raw: Value,
     codec: &dyn Codec,
-) -> Result<(String, Vec<ClaimedMessage>), EventBusError> {
+) -> Result<(String, Vec<FetchedEntry>), EventBusError> {
     let items = match raw {
         Value::Array(v) if v.len() >= 2 => v,
         Value::Nil => return Ok(("0-0".to_string(), Vec::new())),
@@ -388,11 +407,13 @@ fn parse_autoclaim(
     let range: StreamRangeReply = FromRedisValue::from_redis_value(items[1].clone())
         .map_err(|err| EventBusError::source("decode XAUTOCLAIM entries", err))?;
 
+    // Per-entry decoding (no `?`) so a corrupt entry becomes `Malformed`
+    // instead of poisoning the whole reclaim batch.
     let claimed = range
         .ids
         .iter()
         .map(|entry| decode_entry(entry, true, codec))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect();
 
     Ok((next_start, claimed))
 }
@@ -439,8 +460,15 @@ mod tests {
         assert_stream_backend::<RedisBackend>();
     }
 
+    fn malformed_id(entry: &FetchedEntry) -> Option<&str> {
+        match entry {
+            FetchedEntry::Malformed { id, .. } => Some(id.as_str()),
+            FetchedEntry::Decoded(_) => None,
+        }
+    }
+
     #[test]
-    fn decode_entry_reports_invalid_payload() {
+    fn decode_entry_reports_invalid_payload_as_malformed() {
         let entry = StreamId {
             id: "1-0".into(),
             map: HashMap::from([(
@@ -451,11 +479,12 @@ mod tests {
             delivered_count: None,
         };
 
-        assert!(decode_entry(&entry, false, &JsonCodec).is_err());
+        let decoded = decode_entry(&entry, false, &JsonCodec);
+        assert_eq!(malformed_id(&decoded), Some("1-0"));
     }
 
     #[test]
-    fn parse_autoclaim_reports_invalid_entry_payload() {
+    fn parse_autoclaim_surfaces_malformed_entry() {
         let raw = Value::Array(vec![
             Value::BulkString(b"0-0".to_vec()),
             Value::Array(vec![Value::Array(vec![
@@ -468,7 +497,9 @@ mod tests {
             Value::Array(vec![]),
         ]);
 
-        assert!(parse_autoclaim(raw, &JsonCodec).is_err());
+        let (_, entries) = parse_autoclaim(raw, &JsonCodec).expect("parse autoclaim");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(malformed_id(&entries[0]), Some("1-0"));
     }
 
     #[test]
@@ -504,10 +535,14 @@ mod tests {
             Value::Array(vec![]),
         ]);
 
-        let (cursor, claimed) = parse_autoclaim(raw, &codec).expect("parse xautoclaim");
+        let (cursor, entries) = parse_autoclaim(raw, &codec).expect("parse xautoclaim");
 
         assert_eq!(cursor, "42-0");
-        assert_eq!(claimed.len(), 1);
-        assert_eq!(claimed[0].id, "1-0");
+        assert_eq!(entries.len(), 1);
+        let claimed = match &entries[0] {
+            FetchedEntry::Decoded(c) => c,
+            FetchedEntry::Malformed { .. } => panic!("expected decoded"),
+        };
+        assert_eq!(claimed.id, "1-0");
     }
 }

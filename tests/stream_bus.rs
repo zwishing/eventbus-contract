@@ -7,8 +7,8 @@ use std::{collections::VecDeque, future::Future, pin::Pin};
 
 use chrono::Utc;
 use eventbus_contract::stream::{
-    ClaimedMessage, ErrorObserver, ErrorScope, MemoryStreamBackend, StreamBackend, StreamBus,
-    StreamBusOptions,
+    ClaimedMessage, ErrorObserver, ErrorScope, FetchedEntry, MemoryStreamBackend, StreamBackend,
+    StreamBus, StreamBusOptions,
 };
 use eventbus_contract::{
     AckMode, Delivery, EventBusError, Handler, Headers, Message, PartialDeliveryState,
@@ -455,9 +455,11 @@ async fn retry_max_routes_to_dead_letter_stream() {
     .await
     .expect("dead letter written");
 
+    // `max_retry: 1` means one *retry* on top of the initial delivery, so the
+    // handler runs twice before the message ends up in the DLQ.
     assert_eq!(backend.stream_len("evt.retry.max.dlq").await, 1);
-    assert_eq!(attempts.load(Ordering::SeqCst), 1);
-    assert_eq!(result.lock().await.len(), 1);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(result.lock().await.len(), 2);
     sub.close().await.expect("close sub");
     assert_eq!(
         backend.pending_count("evt.retry.max", "cg.retry.max").await,
@@ -874,7 +876,7 @@ impl FailingAckBackend {
         &'a self,
         count: usize,
         timeout: Duration,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send + 'a>> {
         Box::pin(async move {
             if count == 0 {
                 return Ok(Vec::new());
@@ -884,7 +886,7 @@ impl FailingAckBackend {
                 let mut queue = self.queue.lock().await;
                 if !queue.is_empty() {
                     let take = count.min(queue.len());
-                    return Ok(queue.drain(..take).collect());
+                    return Ok(queue.drain(..take).map(FetchedEntry::Decoded).collect());
                 }
             }
 
@@ -896,7 +898,7 @@ impl FailingAckBackend {
             let _ = tokio::time::timeout(timeout, notified).await;
             let mut queue = self.queue.lock().await;
             let take = count.min(queue.len());
-            Ok(queue.drain(..take).collect())
+            Ok(queue.drain(..take).map(FetchedEntry::Decoded).collect())
         })
     }
 }
@@ -943,7 +945,7 @@ impl StreamBackend for FailingAckBackend {
         _consumer: &str,
         _min_idle: Duration,
         _count: usize,
-    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send {
+    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
         async { Ok(Vec::new()) }
     }
 
@@ -954,7 +956,7 @@ impl StreamBackend for FailingAckBackend {
         _consumer: &str,
         count: usize,
         timeout: Duration,
-    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send {
+    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
         self.read_new_impl(count, timeout)
     }
 
@@ -1050,7 +1052,7 @@ impl StreamBackend for ParallelPublishBackend {
         _consumer: &str,
         _min_idle: Duration,
         _count: usize,
-    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send {
+    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
         async { Ok(Vec::new()) }
     }
 
@@ -1061,7 +1063,7 @@ impl StreamBackend for ParallelPublishBackend {
         _consumer: &str,
         _count: usize,
         _timeout: Duration,
-    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send {
+    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
         async { Ok(Vec::new()) }
     }
 
@@ -1150,7 +1152,7 @@ impl StreamBackend for BatchAckBackend {
         _consumer: &str,
         _min_idle: Duration,
         _count: usize,
-    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send {
+    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
         async { Ok(Vec::new()) }
     }
 
@@ -1161,7 +1163,7 @@ impl StreamBackend for BatchAckBackend {
         _consumer: &str,
         count: usize,
         wait: Duration,
-    ) -> impl Future<Output = Result<Vec<ClaimedMessage>, EventBusError>> + Send {
+    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
         async move {
             if count == 0 {
                 return Ok(Vec::new());
@@ -1170,7 +1172,7 @@ impl StreamBackend for BatchAckBackend {
                 let mut queue = self.queue.lock().await;
                 if !queue.is_empty() {
                     let take = count.min(queue.len());
-                    return Ok(queue.drain(..take).collect());
+                    return Ok(queue.drain(..take).map(FetchedEntry::Decoded).collect());
                 }
             }
             if wait.is_zero() {
@@ -1180,7 +1182,7 @@ impl StreamBackend for BatchAckBackend {
             let _ = tokio::time::timeout(wait, notified).await;
             let mut queue = self.queue.lock().await;
             let take = count.min(queue.len());
-            Ok(queue.drain(..take).collect())
+            Ok(queue.drain(..take).map(FetchedEntry::Decoded).collect())
         }
     }
 
@@ -1514,4 +1516,240 @@ async fn error_observer_receives_ack_flush_failures() {
         scopes.contains(&ErrorScope::AckFlush),
         "expected AckFlush observation, saw: {scopes:?}"
     );
+}
+
+/// Regression for the limiter-cap bug: with `max_in_flight: 1` and the
+/// **default** `max_pending_acks` (= 0, normalized to 2), the bus must never
+/// run two handlers concurrently. Earlier code sized the limiter as
+/// `max(max_pending_acks, max_in_flight)` and would silently allow 2 concurrent
+/// handlers under the documented configuration.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn default_max_pending_acks_does_not_inflate_handler_concurrency() {
+    struct H {
+        in_flight: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        release: Arc<Notify>,
+        started_tx: mpsc::Sender<()>,
+    }
+    impl Handler for H {
+        async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
+        where
+            D: Delivery + Send + Sync,
+        {
+            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            let _ = self
+                .peak
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |p| Some(p.max(now)));
+            self.started_tx.send(()).await.ok();
+            self.release.notified().await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            delivery.ack().await
+        }
+    }
+
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(backend, StreamBusOptions::default()).expect("construct bus");
+
+    let release = Arc::new(Notify::new());
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (started_tx, mut started_rx) = mpsc::channel(8);
+
+    let sub = bus
+        .subscribe(
+            SubscriptionConfig {
+                topic: "evt.cap".to_string(),
+                consumer_group: "cg.cap".to_string(),
+                consumer_name: "consumer-1".to_string(),
+                ack_mode: AckMode::Manual,
+                max_in_flight: 1,
+                // max_pending_acks left at 0 → normalized to 2 * max_in_flight
+                ..Default::default()
+            },
+            H {
+                in_flight: Arc::clone(&in_flight),
+                peak: Arc::clone(&peak),
+                release: Arc::clone(&release),
+                started_tx,
+            },
+        )
+        .await
+        .expect("subscribe");
+
+    for i in 0..4 {
+        bus.publish(
+            message("evt.cap", &format!("uid-{i}")),
+            PublishOptions::default(),
+        )
+        .await
+        .expect("publish");
+    }
+
+    // Drain handlers one at a time.
+    for _ in 0..4 {
+        timeout(Duration::from_secs(2), started_rx.recv())
+            .await
+            .expect("handler started")
+            .expect("signal");
+        // While this handler is parked, no other handler must be running.
+        assert_eq!(
+            in_flight.load(Ordering::SeqCst),
+            1,
+            "max_in_flight=1 must mean exactly 1 concurrent handler",
+        );
+        release.notify_one();
+    }
+
+    assert_eq!(peak.load(Ordering::SeqCst), 1);
+    sub.close().await.expect("close sub");
+}
+
+/// Regression for the poison-pill bug: a single corrupt entry must not stall
+/// the rest of the batch. The bus is expected to ack the malformed entry,
+/// route a synthetic envelope to the configured DLQ, fire the error
+/// observer, and continue delivering well-formed entries normally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_entry_is_acked_dlqd_and_does_not_stall_batch() {
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Default)]
+    struct PoisonBackend {
+        next_id: AtomicUsize,
+        // queue of (id, entry) pairs the consumer should see
+        queue: StdMutex<VecDeque<FetchedEntry>>,
+        notify: Notify,
+        dlq: StdMutex<Vec<Message>>,
+        acks: StdMutex<Vec<String>>,
+    }
+
+    impl StreamBackend for PoisonBackend {
+        async fn create_group(
+            &self,
+            _stream: &str,
+            _group: &str,
+            _start_id: &str,
+        ) -> Result<(), EventBusError> {
+            Ok(())
+        }
+
+        async fn publish(&self, stream: &str, message: Message) -> Result<String, EventBusError> {
+            let id = format!("{}-0", self.next_id.fetch_add(1, Ordering::SeqCst));
+            if stream == "evt.poison.dlq" {
+                self.dlq.lock().unwrap().push(message);
+            }
+            Ok(id)
+        }
+
+        async fn reclaim_idle(
+            &self,
+            _stream: &str,
+            _group: &str,
+            _consumer: &str,
+            _min_idle: Duration,
+            _count: usize,
+        ) -> Result<Vec<FetchedEntry>, EventBusError> {
+            Ok(Vec::new())
+        }
+
+        async fn read_new(
+            &self,
+            _stream: &str,
+            _group: &str,
+            _consumer: &str,
+            count: usize,
+            wait: Duration,
+        ) -> Result<Vec<FetchedEntry>, EventBusError> {
+            if count == 0 {
+                return Ok(Vec::new());
+            }
+            {
+                let mut q = self.queue.lock().unwrap();
+                if !q.is_empty() {
+                    let take = count.min(q.len());
+                    return Ok(q.drain(..take).collect());
+                }
+            }
+            if wait.is_zero() {
+                return Ok(Vec::new());
+            }
+            let _ = tokio::time::timeout(wait, self.notify.notified()).await;
+            let mut q = self.queue.lock().unwrap();
+            let take = count.min(q.len());
+            Ok(q.drain(..take).collect())
+        }
+
+        async fn ack(
+            &self,
+            _stream: &str,
+            _group: &str,
+            message_id: &str,
+        ) -> Result<(), EventBusError> {
+            self.acks.lock().unwrap().push(message_id.to_string());
+            Ok(())
+        }
+    }
+
+    let backend = Arc::new(PoisonBackend::default());
+
+    // Pre-load a malformed entry then a healthy one. The malformed should be
+    // routed to DLQ + acked; the healthy one must reach the handler.
+    {
+        let mut q = backend.queue.lock().unwrap();
+        q.push_back(FetchedEntry::Malformed {
+            id: "1-0".into(),
+            error: EventBusError::Serialization("bad payload".into()),
+        });
+        q.push_back(FetchedEntry::Decoded(ClaimedMessage {
+            id: "2-0".into(),
+            message: Arc::new(message("evt.poison", "uid-good")),
+            state: PartialDeliveryState {
+                attempt: 1,
+                first_received: Utc::now(),
+                last_received: Utc::now(),
+                redelivered: false,
+            },
+        }));
+    }
+
+    let bus =
+        StreamBus::new(Arc::clone(&backend), StreamBusOptions::default()).expect("construct bus");
+
+    let (tx, mut rx) = mpsc::channel(1);
+    let sub = bus
+        .subscribe(
+            SubscriptionConfig {
+                topic: "evt.poison".to_string(),
+                consumer_group: "cg.poison".to_string(),
+                consumer_name: "consumer-1".to_string(),
+                ack_mode: AckMode::AutoOnHandlerSuccess,
+                max_in_flight: 1,
+                dead_letter_topic: Some("evt.poison.dlq".to_string()),
+                ..Default::default()
+            },
+            AutoAckHandler { tx },
+        )
+        .await
+        .expect("subscribe");
+
+    let got = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("healthy entry was delivered despite the poison entry")
+        .expect("message");
+    assert_eq!(got.uid, "uid-good");
+
+    // Wait briefly for the malformed-entry side effects (DLQ + ack) to flush.
+    sleep(Duration::from_millis(50)).await;
+
+    let dlq = backend.dlq.lock().unwrap();
+    assert_eq!(dlq.len(), 1, "malformed entry should land in DLQ");
+    assert_eq!(dlq[0].kind, "eventbus.malformed");
+    assert_eq!(dlq[0].key, "1-0");
+
+    let acks = backend.acks.lock().unwrap();
+    assert!(
+        acks.contains(&"1-0".to_string()),
+        "malformed entry must be acked so it leaves the PEL, saw: {acks:?}"
+    );
+
+    sub.close().await.expect("close sub");
 }
