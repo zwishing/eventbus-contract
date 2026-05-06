@@ -7,7 +7,8 @@ use std::{collections::VecDeque, future::Future, pin::Pin};
 
 use chrono::Utc;
 use eventbus_contract::stream::{
-    ClaimedMessage, MemoryStreamBackend, StreamBackend, StreamBus, StreamBusOptions,
+    ClaimedMessage, ErrorObserver, ErrorScope, MemoryStreamBackend, StreamBackend, StreamBus,
+    StreamBusOptions,
 };
 use eventbus_contract::{
     AckMode, Delivery, DeliveryState, EventBusError, Handler, Headers, Message, PublishOptions,
@@ -173,7 +174,7 @@ async fn publish_subscribe_auto_ack_drains_pending() {
                 consumer_group: "cg.auto-ack".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -218,7 +219,7 @@ async fn manual_ack_drains_pending() {
                 consumer_group: "cg.manual".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             ManualAckHandler { tx },
@@ -255,7 +256,7 @@ async fn retry_redelivers_message_and_then_drains_pending() {
                 consumer_group: "cg.retry".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 max_retry: 5,
                 ..Default::default()
             },
@@ -305,7 +306,7 @@ async fn reclaims_pending_from_inactive_consumer() {
                 consumer_group: "cg.reclaim".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             ReceiveOnlyHandler { tx: first_tx },
@@ -336,7 +337,7 @@ async fn reclaims_pending_from_inactive_consumer() {
                 consumer_group: "cg.reclaim".to_string(),
                 consumer_name: "consumer-2".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AckAndSignalHandler { tx: second_tx },
@@ -367,7 +368,7 @@ async fn nack_routes_to_dead_letter_stream() {
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
                 dead_letter_topic: Some("evt.nack.dlq".to_string()),
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             NackHandler { tx },
@@ -424,7 +425,7 @@ async fn retry_max_routes_to_dead_letter_stream() {
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
                 dead_letter_topic: Some("evt.retry.max.dlq".to_string()),
-                concurrency: 1,
+                max_in_flight: 1,
                 max_retry: 1,
                 ..Default::default()
             },
@@ -477,7 +478,7 @@ async fn manual_ack_handler_error_does_not_auto_retry() {
                 consumer_group: "cg.manual.error".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 max_retry: 5,
                 ..Default::default()
             },
@@ -533,7 +534,7 @@ async fn subscribe_generates_consumer_name_when_empty() {
                 consumer_group: "cg.generated-consumer".to_string(),
                 consumer_name: String::new(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -571,7 +572,7 @@ async fn drop_subscription_stops_background_workers() {
                 consumer_group: "cg.drop".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -629,7 +630,6 @@ async fn subscription_respects_max_in_flight_limit() {
                 consumer_group: "cg.max-in-flight".to_string(),
                 consumer_name: "consumer".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 4,
                 max_in_flight: 1,
                 max_pending_acks: 1,
                 ..Default::default()
@@ -700,7 +700,7 @@ async fn group_start_id_zero_reads_existing_messages() {
                 consumer_group: "cg.from-zero".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -749,7 +749,7 @@ async fn publish_allows_empty_uid_to_match_go_parity() {
                 consumer_group: "cg.empty-uid".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -813,7 +813,6 @@ async fn reclaimed_messages_consume_in_flight_budget() {
                 consumer_group: "cg.inflight-budget".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
                 max_in_flight: 1,
                 max_pending_acks: 1,
                 ..Default::default()
@@ -983,7 +982,7 @@ async fn subscription_close_surfaces_background_delivery_errors() {
                 consumer_group: "cg.failing-ack".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -1235,7 +1234,7 @@ async fn auto_ack_uses_batched_xack() {
                 consumer_group: "cg.batch-ack".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: TOTAL,
+                max_in_flight: TOTAL,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -1346,7 +1345,7 @@ async fn retry_exhausted_without_dlq_returns_error() {
                 consumer_group: "cg.no-dlq".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 max_retry: 1,
                 // Intentionally no dead_letter_topic — used to silently ack.
                 ..Default::default()
@@ -1392,7 +1391,7 @@ async fn auto_generated_consumer_name_has_random_suffix() {
         consumer_group: "cg.cn-rand".to_string(),
         consumer_name: String::new(),
         ack_mode: AckMode::AutoOnHandlerSuccess,
-        concurrency: 1,
+        max_in_flight: 1,
         ..Default::default()
     };
 
@@ -1430,7 +1429,7 @@ async fn subscription_is_running_flips_on_close() {
                 consumer_group: "cg.is-running".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -1441,4 +1440,65 @@ async fn subscription_is_running_flips_on_close() {
     assert!(sub.is_running());
     sub.close().await.expect("close");
     assert!(!sub.is_running());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn error_observer_receives_ack_flush_failures() {
+    #[derive(Default)]
+    struct ScopeRecorder {
+        scopes: Mutex<Vec<ErrorScope>>,
+    }
+
+    impl ErrorObserver for ScopeRecorder {
+        fn on_error(&self, scope: ErrorScope, _err: &EventBusError) {
+            // The observer hook is sync, but in a test we want to record into
+            // an async-aware structure — `try_lock` keeps the hook non-blocking.
+            if let Ok(mut g) = self.scopes.try_lock() {
+                g.push(scope);
+            }
+        }
+    }
+
+    let recorder = Arc::new(ScopeRecorder::default());
+    let backend = Arc::new(FailingAckBackend::default());
+    let bus = StreamBus::new(
+        backend,
+        StreamBusOptions::default().with_error_observer(recorder.clone()),
+    )
+    .expect("construct bus");
+
+    let (tx, mut rx) = mpsc::channel(1);
+    let sub = bus
+        .subscribe(
+            SubscriptionConfig {
+                topic: "evt.observer-ack".to_string(),
+                consumer_group: "cg.observer-ack".to_string(),
+                consumer_name: "consumer-1".to_string(),
+                ack_mode: AckMode::AutoOnHandlerSuccess,
+                max_in_flight: 1,
+                ..Default::default()
+            },
+            AutoAckHandler { tx },
+        )
+        .await
+        .expect("subscribe");
+
+    bus.publish(
+        message("evt.observer-ack", "uid-obs"),
+        PublishOptions::default(),
+    )
+    .await
+    .expect("publish");
+
+    timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("handler ran")
+        .expect("message");
+
+    let _ = sub.close().await; // returns Err because of the failing ack
+    let scopes = recorder.scopes.lock().await.clone();
+    assert!(
+        scopes.iter().any(|s| *s == ErrorScope::AckFlush),
+        "expected AckFlush observation, saw: {scopes:?}"
+    );
 }

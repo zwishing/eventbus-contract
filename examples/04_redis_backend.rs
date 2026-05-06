@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ack_mode: AckMode::Manual,
                 max_retry: 3,
                 dead_letter_topic: Some("demo.events.dlq".to_string()),
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             PrintHandler { tx },

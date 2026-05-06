@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 consumer_group: "notification-service".to_string(),
                 consumer_name: "worker-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             PrintHandler { tx },

@@ -171,29 +171,22 @@ impl PublishOptions {
 ///
 /// ## In-flight sizing precedence
 ///
-/// The bus reconciles four overlapping inputs in this order during
-/// [`SubscriptionConfig::apply_defaults`]:
+/// During [`SubscriptionConfig::apply_defaults`] the bus reconciles three
+/// related inputs:
 ///
-/// 1. If `backpressure` is set, its `max_in_flight` / `max_pending_acks`
-///    seed the matching fields when those are still `0`. Setting both
+/// 1. If `backpressure` is set, its `max_in_flight` / `max_pending_acks` seed
+///    the matching fields when those are still `0`. Setting both
 ///    `backpressure.max_in_flight` and `max_in_flight` to **different**
-///    non-zero values is a configuration error and surfaces from `validate`.
-/// 2. Otherwise, `max_in_flight` falls back to `concurrency` (or `1`).
+///    non-zero values is a configuration error surfaced by `validate`.
+/// 2. `max_in_flight` falls back to `1` if still unset.
 /// 3. `max_pending_acks` falls back to `2 * max_in_flight`.
 /// 4. If `backpressure` was unset, one is synthesized from the resolved
 ///    `max_in_flight` / `max_pending_acks`.
-///
-/// Recommended usage: set **`max_in_flight` directly** and leave
-/// `concurrency` at its default — `concurrency` is retained as a
-/// shorthand for backwards compatibility.
 #[derive(Debug, Clone)]
 pub struct SubscriptionConfig {
     pub topic: Topic,
     pub consumer_group: String,
     pub consumer_name: String,
-    /// Shorthand seed for `max_in_flight` when both fields are unset.
-    /// Prefer setting `max_in_flight` directly.
-    pub concurrency: usize,
     pub max_retry: usize,
     pub retry_backoff: Duration,
     pub dead_letter_topic: Option<Topic>,
@@ -213,7 +206,6 @@ impl Default for SubscriptionConfig {
             topic: String::new(),
             consumer_group: String::new(),
             consumer_name: String::new(),
-            concurrency: 0,
             max_retry: 0,
             retry_backoff: Duration::ZERO,
             dead_letter_topic: None,
@@ -254,11 +246,7 @@ impl SubscriptionConfig {
         }
 
         if self.max_in_flight == 0 {
-            self.max_in_flight = if self.concurrency > 0 {
-                self.concurrency
-            } else {
-                1
-            };
+            self.max_in_flight = 1;
         }
         if self.max_pending_acks == 0 {
             self.max_pending_acks = self.max_in_flight * 2;

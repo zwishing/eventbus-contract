@@ -2,7 +2,7 @@
 //!
 //! Shows horizontal scaling within a single consumer group:
 //!
-//! - `concurrency: N` allows up to N handler tasks to run concurrently
+//! - `max_in_flight: N` allows up to N handler tasks to run concurrently
 //! - All workers share the same consumer group — each message is processed
 //!   by exactly one worker (competing/queue semantics)
 //! - The order of delivery across workers is not guaranteed
@@ -67,17 +67,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let processed = Arc::new(AtomicUsize::new(0));
     let (tx, mut rx) = mpsc::channel(MESSAGE_COUNT);
 
-    // Subscribe with concurrency=3: the bus may run up to three handler tasks
-    // concurrently while sharing the same consumer group.
+    // Subscribe with max_in_flight=3: the bus may run up to three handler
+    // tasks concurrently while sharing the same consumer group.
     let sub = bus
         .subscribe(
             SubscriptionConfig {
                 topic: "job.created".to_string(),
                 consumer_group: "job-processor".to_string(),
-                // consumer_name is used as a prefix when concurrency > 1:
-                // the Redis consumer identity remains stable for this subscriber
+                // The Redis consumer identity stays stable for this subscriber
+                // even when max_in_flight > 1 — handlers run on a shared name.
                 consumer_name: "processor".to_string(),
-                concurrency: WORKER_COUNT,
+                max_in_flight: WORKER_COUNT,
                 ack_mode: AckMode::Manual,
                 ..Default::default()
             },

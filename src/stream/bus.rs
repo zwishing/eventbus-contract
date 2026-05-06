@@ -16,6 +16,7 @@ use super::{
     ack_flusher::{self, AckRequest},
     backend::{ClaimedMessage, SharedBackend, StreamBackend},
     delivery::StreamDelivery,
+    observer::{ErrorObserver, ErrorScope},
     subscription::StreamSubscription,
 };
 
@@ -52,7 +53,7 @@ impl<H> Clone for RuntimeState<H> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct StreamBusOptions {
     pub block_timeout: Duration,
     pub claim_idle_timeout: Duration,
@@ -77,6 +78,31 @@ pub struct StreamBusOptions {
     /// this on receive are surfaced as `Serialization` and never reach the
     /// handler. Set to `0` to disable the check (not recommended).
     pub max_payload_bytes: usize,
+    /// Observer for transient errors raised by the read / reclaim / ack-flush
+    /// loops. Without one, errors are silently retried with backoff; with
+    /// one, you can route them to metrics, tracing, or alerts. The hook is
+    /// invoked from inside the loops and **must not block**.
+    pub error_observer: Option<Arc<dyn ErrorObserver>>,
+}
+
+impl std::fmt::Debug for StreamBusOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamBusOptions")
+            .field("block_timeout", &self.block_timeout)
+            .field("claim_idle_timeout", &self.claim_idle_timeout)
+            .field("claim_scan_batch_size", &self.claim_scan_batch_size)
+            .field("group_start_id", &self.group_start_id)
+            .field("publish_batch_parallelism", &self.publish_batch_parallelism)
+            .field("ack_batch_size", &self.ack_batch_size)
+            .field("ack_flush_interval", &self.ack_flush_interval)
+            .field("reclaim_interval", &self.reclaim_interval)
+            .field("max_payload_bytes", &self.max_payload_bytes)
+            .field(
+                "error_observer",
+                &self.error_observer.as_ref().map(|_| "<observer>"),
+            )
+            .finish()
+    }
 }
 
 impl Default for StreamBusOptions {
@@ -91,6 +117,7 @@ impl Default for StreamBusOptions {
             ack_flush_interval: Duration::from_millis(2),
             reclaim_interval: Duration::from_millis(500),
             max_payload_bytes: DEFAULT_MAX_PAYLOAD_BYTES,
+            error_observer: None,
         }
     }
 }
@@ -164,6 +191,13 @@ impl StreamBusOptions {
     #[must_use]
     pub fn with_max_payload_bytes(mut self, v: usize) -> Self {
         self.max_payload_bytes = v;
+        self
+    }
+
+    /// Installs an [`ErrorObserver`] for transient runtime errors.
+    #[must_use]
+    pub fn with_error_observer(mut self, observer: Arc<dyn ErrorObserver>) -> Self {
+        self.error_observer = Some(observer);
         self
     }
 
@@ -378,7 +412,10 @@ impl<B: StreamBackend> StreamBus<B> {
                             self.spawn_messages(&mut tasks, messages, &runtime).await?;
                         }
                         Ok(_) => {}
-                        Err(_) => {
+                        Err(err) => {
+                            if let Some(obs) = self.options.error_observer.as_ref() {
+                                obs.on_error(ErrorScope::Read, &err);
+                            }
                             let sleep_dur = backoff.next();
                             if !sleep_or_close(&mut close_rx, sleep_dur).await {
                                 break;
@@ -657,6 +694,7 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
             group,
             self.options.ack_batch_size,
             self.options.ack_flush_interval,
+            self.options.error_observer.clone(),
         );
 
         let limiter = Arc::new(Semaphore::new(limit));
@@ -675,6 +713,7 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
                 claim_idle_timeout: self.options.claim_idle_timeout,
                 claim_scan_batch_size: self.options.claim_scan_batch_size,
                 reclaim_interval: self.options.reclaim_interval,
+                error_observer: self.options.error_observer.clone(),
             };
             async move { reclaim_loop(args).await }
         });
@@ -722,6 +761,7 @@ struct ReclaimLoopArgs<B: StreamBackend> {
     claim_idle_timeout: Duration,
     claim_scan_batch_size: usize,
     reclaim_interval: Duration,
+    error_observer: Option<Arc<dyn ErrorObserver>>,
 }
 
 async fn reclaim_loop<B: StreamBackend>(args: ReclaimLoopArgs<B>) {
@@ -736,6 +776,7 @@ async fn reclaim_loop<B: StreamBackend>(args: ReclaimLoopArgs<B>) {
         claim_idle_timeout,
         claim_scan_batch_size,
         reclaim_interval,
+        error_observer,
     } = args;
 
     let mut backoff = BackoffState::new(Duration::from_millis(100));
@@ -761,7 +802,10 @@ async fn reclaim_loop<B: StreamBackend>(args: ReclaimLoopArgs<B>) {
                 }
                 backoff.reset();
             }
-            Err(_) => {
+            Err(err) => {
+                if let Some(obs) = error_observer.as_ref() {
+                    obs.on_error(ErrorScope::Reclaim, &err);
+                }
                 let dur = backoff.next();
                 if !sleep_or_close(&mut close_rx, dur).await {
                     break;
@@ -900,6 +944,7 @@ mod tests {
             ack_flush_interval: Duration::ZERO,
             reclaim_interval: Duration::ZERO,
             max_payload_bytes: 0,
+            error_observer: None,
         }
         .normalize()
         .expect("normalize options");
