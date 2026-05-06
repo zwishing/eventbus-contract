@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::{
     stream::backend::{ClaimedMessage, StreamBackend},
-    DeliveryState, EventBusError, Message,
+    EventBusError, Message, PartialDeliveryState,
 };
 
 /// In-process stream backend.
@@ -134,9 +134,8 @@ impl StreamBackend for MemoryStreamBackend {
                 claimed.push(ClaimedMessage {
                     id,
                     message: Arc::clone(&pending.message),
-                    state: DeliveryState {
+                    state: PartialDeliveryState {
                         attempt: pending.delivery_count,
-                        max_attempt: 0, // filled by bus layer from SubscriptionConfig
                         first_received: pending.first_received,
                         last_received: pending.last_received,
                         redelivered: pending.redelivered,
@@ -256,9 +255,8 @@ impl MemoryStreamBackend {
             claimed.push(ClaimedMessage {
                 id: entry.id,
                 message,
-                state: DeliveryState {
+                state: PartialDeliveryState {
                     attempt,
-                    max_attempt: 0, // filled by bus layer from SubscriptionConfig
                     first_received: now,
                     last_received: now,
                     redelivered: false,

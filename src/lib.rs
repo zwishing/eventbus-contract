@@ -19,7 +19,9 @@ pub use contract::{
     AckMode, BackpressurePolicy, ConsumerBalanceMode, DeliveryGuarantee, GuaranteeMatrix,
     OrderingMode, OverflowStrategy, PublishConfirmation, SubscriptionSemantics,
 };
-pub use delivery_contract::{DeliveryInspector, DeliveryOutcome, DeliveryState};
+pub use delivery_contract::{
+    DeliveryInspector, DeliveryOutcome, DeliveryState, PartialDeliveryState,
+};
 pub use dispatcher::{Config, Dispatcher, DispatcherConfig, Listener, Notification, Notifier};
 pub use error::EventBusError;
 pub use eventbus::{

@@ -7,7 +7,26 @@
 //!
 //! Wire format is compatible with the Go `StreamBus` — messages are
 //! serialised as JSON inside a `{"message": ...}` envelope stored in the
-//! `"message"` field of each Redis Stream entry.
+//! `"message"` field of each Redis Stream entry. Override the default
+//! [`JsonCodec`](crate::codec::JsonCodec) via [`RedisBackend::with_codec`]
+//! when wire-compat with the Go implementation is not required.
+//!
+//! # Connection security
+//!
+//! [`RedisBackend`] takes an already-connected [`MultiplexedConnection`]; the
+//! caller is responsible for choosing the connection URL and any TLS / auth
+//! settings:
+//!
+//! - Use a `rediss://` URL (note the double `s`) to negotiate TLS. The
+//!   `rustls`/`native-tls` flavours are gated by `redis-rs` features —
+//!   pick one in your downstream `Cargo.toml`.
+//! - Use a URL of the form `redis://:<password>@host` (or `redis://user:<password>@host`
+//!   for ACL) to authenticate.
+//!
+//! This crate does not require, default to, or downgrade TLS — the
+//! [`MultiplexedConnection`] is treated as opaque. Production deployments
+//! should connect over `rediss://` and ensure the server certificate is
+//! validated against a known CA.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +38,7 @@ use redis::streams::{StreamId, StreamRangeReply, StreamReadReply};
 use redis::{FromRedisValue, Value};
 
 use crate::codec::JsonCodec;
-use crate::{Codec, DeliveryState, EventBusError, Message, HEADER_RETRY_ATTEMPT};
+use crate::{Codec, EventBusError, Message, PartialDeliveryState, HEADER_RETRY_ATTEMPT};
 
 use crate::stream::backend::{ClaimedMessage, StreamBackend};
 use crate::stream::bus::{StreamBus, StreamBusOptions};
@@ -337,9 +356,8 @@ fn decode_entry(
     Ok(ClaimedMessage {
         id: entry.id.clone(),
         message: Arc::new(message),
-        state: DeliveryState {
+        state: PartialDeliveryState {
             attempt,
-            max_attempt: 0, // filled by bus layer from SubscriptionConfig
             first_received: now,
             last_received: now,
             redelivered,

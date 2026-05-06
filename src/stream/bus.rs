@@ -308,11 +308,7 @@ impl<B: StreamBackend> StreamBus<B> {
         options: &PublishOptions,
         max_payload_bytes: usize,
     ) -> Result<Message, EventBusError> {
-        if message.topic.trim().is_empty() {
-            return Err(EventBusError::Validation(
-                "message topic is required".into(),
-            ));
-        }
+        validate_topic(&message.topic)?;
 
         if max_payload_bytes > 0 && message.payload.len() > max_payload_bytes {
             return Err(EventBusError::Validation(format!(
@@ -478,15 +474,22 @@ impl<B: StreamBackend> StreamBus<B> {
     where
         H: Handler + Send + Sync + 'static,
     {
+        // The caller (`consume_loop` / `reclaim_rx`) sized this batch against
+        // a snapshot of `available_permits()`, and nothing else acquires from
+        // this limiter — so `try_acquire_owned` should always succeed. We use
+        // it instead of `acquire_owned().await` to:
+        //   1. avoid blocking the loop on permit acquisition (preserves close
+        //      / reclaim responsiveness if the architecture ever grows another
+        //      consumer of the limiter), and
+        //   2. surface a loud `Internal` error if the invariant is ever
+        //      regressed in the future, instead of silently deadlocking.
         for claimed in messages {
-            let permit = runtime
-                .limiter
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|err| {
-                    EventBusError::Internal(format!("in-flight limiter closed: {err}"))
-                })?;
+            let permit = runtime.limiter.clone().try_acquire_owned().map_err(|err| {
+                EventBusError::Internal(format!(
+                    "in-flight limiter exhausted unexpectedly while spawning \
+                         delivery: {err}"
+                ))
+            })?;
             let bus = self.clone();
             let config = Arc::clone(&runtime.config);
             let handler = Arc::clone(&runtime.handler);
@@ -510,8 +513,8 @@ impl<B: StreamBackend> StreamBus<B> {
     where
         H: Handler + Send + Sync + 'static,
     {
-        let mut state = claimed.state;
-        state.max_attempt = config.max_retry.max(1) as u32;
+        let max_attempt = config.max_retry.max(1) as u32;
+        let state = claimed.state.with_max_attempt(max_attempt);
 
         let ack_mode = config.ack_mode;
         let delivery = StreamDelivery::new(
@@ -648,11 +651,7 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
     where
         H: Handler + Send + Sync + 'static,
     {
-        if cfg.topic.trim().is_empty() {
-            return Err(EventBusError::Validation(
-                "subscription topic is required".into(),
-            ));
-        }
+        validate_topic(&cfg.topic)?;
         if cfg.consumer_group.trim().is_empty() {
             return Err(EventBusError::Validation(
                 "consumer group is required".into(),
@@ -818,6 +817,34 @@ async fn reclaim_loop<B: StreamBackend>(args: ReclaimLoopArgs<B>) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Maximum allowed topic length (chars). Bounds the size of payloads / cursor
+/// keys / log lines downstream. 1 KiB is generous — real topics are short.
+const MAX_TOPIC_LEN: usize = 1024;
+
+/// Validate a topic name at the bus boundary (publish + subscribe).
+///
+/// Rejects empty / whitespace-only names, names longer than [`MAX_TOPIC_LEN`],
+/// and any string containing ASCII control characters. Backends that treat
+/// topic names as paths or queries (future work) can add their own further
+/// restrictions; this is the floor.
+fn validate_topic(topic: &str) -> Result<(), EventBusError> {
+    if topic.trim().is_empty() {
+        return Err(EventBusError::Validation("topic is required".into()));
+    }
+    if topic.len() > MAX_TOPIC_LEN {
+        return Err(EventBusError::Validation(format!(
+            "topic length {} exceeds limit of {MAX_TOPIC_LEN}",
+            topic.len()
+        )));
+    }
+    if topic.chars().any(|c| c.is_control()) {
+        return Err(EventBusError::Validation(
+            "topic must not contain control characters".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// Drain synchronously-ready completed tasks without an executor roundtrip.
 fn drain_completed_tasks(

@@ -11,8 +11,8 @@ use eventbus_contract::stream::{
     StreamBusOptions,
 };
 use eventbus_contract::{
-    AckMode, Delivery, DeliveryState, EventBusError, Handler, Headers, Message, PublishOptions,
-    SubscriptionConfig,
+    AckMode, Delivery, EventBusError, Handler, Headers, Message, PartialDeliveryState,
+    PublishOptions, SubscriptionConfig,
 };
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{sleep, timeout};
@@ -923,9 +923,8 @@ impl StreamBackend for FailingAckBackend {
                 queue.push_back(ClaimedMessage {
                     id: id.clone(),
                     message: Arc::new(message),
-                    state: DeliveryState {
+                    state: PartialDeliveryState {
                         attempt: 1,
-                        max_attempt: 1,
                         first_received: Utc::now(),
                         last_received: Utc::now(),
                         redelivered: false,
@@ -1131,9 +1130,8 @@ impl StreamBackend for BatchAckBackend {
                 queue.push_back(ClaimedMessage {
                     id: id.clone(),
                     message: Arc::new(message),
-                    state: DeliveryState {
+                    state: PartialDeliveryState {
                         attempt: 1,
-                        max_attempt: 1,
                         first_received: Utc::now(),
                         last_received: Utc::now(),
                         redelivered: false,
@@ -1443,6 +1441,21 @@ async fn subscription_is_running_flips_on_close() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publish_rejects_topic_with_control_char() {
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
+
+    let mut msg = message("evt.ok", "uid-1");
+    msg.topic = "evt.\u{0007}bell".to_string();
+    let err = bus
+        .publish(msg, PublishOptions::default())
+        .await
+        .expect_err("control char in topic must be rejected");
+    assert!(matches!(err, EventBusError::Validation(_)));
+    assert_eq!(backend.stream_len("evt.\u{0007}bell").await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn error_observer_receives_ack_flush_failures() {
     #[derive(Default)]
     struct ScopeRecorder {
@@ -1498,7 +1511,7 @@ async fn error_observer_receives_ack_flush_failures() {
     let _ = sub.close().await; // returns Err because of the failing ack
     let scopes = recorder.scopes.lock().await.clone();
     assert!(
-        scopes.iter().any(|s| *s == ErrorScope::AckFlush),
+        scopes.contains(&ErrorScope::AckFlush),
         "expected AckFlush observation, saw: {scopes:?}"
     );
 }
