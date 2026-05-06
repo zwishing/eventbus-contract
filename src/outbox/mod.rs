@@ -199,10 +199,6 @@ pub trait DeadLetterStore: Send + Sync {
     async fn append_dead_letter(&self, msg: DeadLetterMessageRecord) -> Result<(), EventBusError>;
 }
 
-pub trait Repository: OutboxStore {}
-
-impl<T> Repository for T where T: OutboxStore + ?Sized {}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

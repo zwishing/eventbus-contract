@@ -140,7 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     consumer_name: "worker-1".to_string(),
                     ack_mode: AckMode::Manual,
                     max_retry: 3,
-                    concurrency: 1,
+                    max_in_flight: 1,
                     ..Default::default()
                 },
                 RetryingHandler {
@@ -189,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     consumer_name: "worker-1".to_string(),
                     ack_mode: AckMode::Manual,
                     dead_letter_topic: Some("payment.event.dlq".to_string()),
-                    concurrency: 1,
+                    max_in_flight: 1,
                     ..Default::default()
                 },
                 AlwaysFailHandler { tx },

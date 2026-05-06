@@ -155,6 +155,16 @@ impl<B: StreamBackend> Delivery for StreamDelivery<B> {
         let retry_exhausted = self.state.attempt >= self.state.max_attempt;
 
         if retry_exhausted {
+            // Without a dead-letter topic the message would be silently acked
+            // and lost. Surface the contract violation to the handler so it
+            // can decide between dropping or stashing the payload elsewhere.
+            if self.config.dead_letter_topic.is_none() {
+                self.reset_finalize();
+                return Err(EventBusError::Validation(format!(
+                    "retry exhausted ({}/{}) but no dead_letter_topic configured for topic {}",
+                    self.state.attempt, self.state.max_attempt, self.config.topic,
+                )));
+            }
             if let Err(err) = self.publish_dead_letter(&reason.to_string()).await {
                 self.reset_finalize();
                 return Err(err);

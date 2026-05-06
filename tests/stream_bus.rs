@@ -7,11 +7,12 @@ use std::{collections::VecDeque, future::Future, pin::Pin};
 
 use chrono::Utc;
 use eventbus_contract::stream::{
-    ClaimedMessage, MemoryStreamBackend, StreamBackend, StreamBus, StreamBusOptions,
+    ClaimedMessage, ErrorObserver, ErrorScope, MemoryStreamBackend, StreamBackend, StreamBus,
+    StreamBusOptions,
 };
 use eventbus_contract::{
-    AckMode, Delivery, DeliveryState, EventBusError, Handler, Headers, Message, PublishOptions,
-    SubscriptionConfig,
+    AckMode, Delivery, EventBusError, Handler, Headers, Message, PartialDeliveryState,
+    PublishOptions, SubscriptionConfig,
 };
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{sleep, timeout};
@@ -173,7 +174,7 @@ async fn publish_subscribe_auto_ack_drains_pending() {
                 consumer_group: "cg.auto-ack".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -218,7 +219,7 @@ async fn manual_ack_drains_pending() {
                 consumer_group: "cg.manual".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             ManualAckHandler { tx },
@@ -255,7 +256,7 @@ async fn retry_redelivers_message_and_then_drains_pending() {
                 consumer_group: "cg.retry".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 max_retry: 5,
                 ..Default::default()
             },
@@ -305,7 +306,7 @@ async fn reclaims_pending_from_inactive_consumer() {
                 consumer_group: "cg.reclaim".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             ReceiveOnlyHandler { tx: first_tx },
@@ -336,7 +337,7 @@ async fn reclaims_pending_from_inactive_consumer() {
                 consumer_group: "cg.reclaim".to_string(),
                 consumer_name: "consumer-2".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AckAndSignalHandler { tx: second_tx },
@@ -367,7 +368,7 @@ async fn nack_routes_to_dead_letter_stream() {
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
                 dead_letter_topic: Some("evt.nack.dlq".to_string()),
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             NackHandler { tx },
@@ -424,7 +425,7 @@ async fn retry_max_routes_to_dead_letter_stream() {
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
                 dead_letter_topic: Some("evt.retry.max.dlq".to_string()),
-                concurrency: 1,
+                max_in_flight: 1,
                 max_retry: 1,
                 ..Default::default()
             },
@@ -477,7 +478,7 @@ async fn manual_ack_handler_error_does_not_auto_retry() {
                 consumer_group: "cg.manual.error".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
+                max_in_flight: 1,
                 max_retry: 5,
                 ..Default::default()
             },
@@ -533,7 +534,7 @@ async fn subscribe_generates_consumer_name_when_empty() {
                 consumer_group: "cg.generated-consumer".to_string(),
                 consumer_name: String::new(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -571,7 +572,7 @@ async fn drop_subscription_stops_background_workers() {
                 consumer_group: "cg.drop".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -629,7 +630,6 @@ async fn subscription_respects_max_in_flight_limit() {
                 consumer_group: "cg.max-in-flight".to_string(),
                 consumer_name: "consumer".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 4,
                 max_in_flight: 1,
                 max_pending_acks: 1,
                 ..Default::default()
@@ -700,7 +700,7 @@ async fn group_start_id_zero_reads_existing_messages() {
                 consumer_group: "cg.from-zero".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -749,7 +749,7 @@ async fn publish_allows_empty_uid_to_match_go_parity() {
                 consumer_group: "cg.empty-uid".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -813,7 +813,6 @@ async fn reclaimed_messages_consume_in_flight_budget() {
                 consumer_group: "cg.inflight-budget".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::Manual,
-                concurrency: 1,
                 max_in_flight: 1,
                 max_pending_acks: 1,
                 ..Default::default()
@@ -924,9 +923,8 @@ impl StreamBackend for FailingAckBackend {
                 queue.push_back(ClaimedMessage {
                     id: id.clone(),
                     message: Arc::new(message),
-                    state: DeliveryState {
+                    state: PartialDeliveryState {
                         attempt: 1,
-                        max_attempt: 1,
                         first_received: Utc::now(),
                         last_received: Utc::now(),
                         redelivered: false,
@@ -983,7 +981,7 @@ async fn subscription_close_surfaces_background_delivery_errors() {
                 consumer_group: "cg.failing-ack".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: 1,
+                max_in_flight: 1,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -1132,9 +1130,8 @@ impl StreamBackend for BatchAckBackend {
                 queue.push_back(ClaimedMessage {
                     id: id.clone(),
                     message: Arc::new(message),
-                    state: DeliveryState {
+                    state: PartialDeliveryState {
                         attempt: 1,
-                        max_attempt: 1,
                         first_received: Utc::now(),
                         last_received: Utc::now(),
                         redelivered: false,
@@ -1235,7 +1232,7 @@ async fn auto_ack_uses_batched_xack() {
                 consumer_group: "cg.batch-ack".to_string(),
                 consumer_name: "consumer-1".to_string(),
                 ack_mode: AckMode::AutoOnHandlerSuccess,
-                concurrency: TOTAL,
+                max_in_flight: TOTAL,
                 ..Default::default()
             },
             AutoAckHandler { tx },
@@ -1283,5 +1280,238 @@ async fn auto_ack_uses_batched_xack() {
     assert!(
         ack_many_calls < TOTAL,
         "flusher should coalesce: {ack_many_calls} calls for {TOTAL} messages is not batching"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publish_rejects_oversize_payload() {
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(
+        backend.clone(),
+        StreamBusOptions {
+            max_payload_bytes: 16,
+            ..Default::default()
+        },
+    )
+    .expect("construct bus");
+
+    let mut msg = message("evt.size", "uid-too-big");
+    msg.payload = bytes::Bytes::from(vec![0u8; 32]);
+
+    let err = bus
+        .publish(msg, PublishOptions::default())
+        .await
+        .expect_err("should reject oversize payload");
+    assert!(matches!(err, EventBusError::Validation(_)));
+    assert_eq!(backend.stream_len("evt.size").await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retry_exhausted_without_dlq_returns_error() {
+    struct AlwaysRetryHandler {
+        attempts: Arc<AtomicUsize>,
+        last_err: Arc<Mutex<Option<String>>>,
+        done: Arc<Notify>,
+    }
+
+    impl Handler for AlwaysRetryHandler {
+        async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
+        where
+            D: Delivery + Send + Sync,
+        {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            let res = delivery.retry(&std::io::Error::other("force-retry")).await;
+            if let Err(e) = res {
+                *self.last_err.lock().await = Some(e.to_string());
+                self.done.notify_one();
+                return Err(e);
+            }
+            Ok(())
+        }
+    }
+
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let last_err = Arc::new(Mutex::new(None::<String>));
+    let done = Arc::new(Notify::new());
+    let sub = bus
+        .subscribe(
+            SubscriptionConfig {
+                topic: "evt.no-dlq".to_string(),
+                consumer_group: "cg.no-dlq".to_string(),
+                consumer_name: "consumer-1".to_string(),
+                ack_mode: AckMode::Manual,
+                max_in_flight: 1,
+                max_retry: 1,
+                // Intentionally no dead_letter_topic — used to silently ack.
+                ..Default::default()
+            },
+            AlwaysRetryHandler {
+                attempts: attempts.clone(),
+                last_err: last_err.clone(),
+                done: Arc::clone(&done),
+            },
+        )
+        .await
+        .expect("subscribe");
+
+    bus.publish(
+        message("evt.no-dlq", "uid-no-dlq"),
+        PublishOptions::default(),
+    )
+    .await
+    .expect("publish");
+
+    timeout(Duration::from_secs(2), done.notified())
+        .await
+        .expect("retry rejection surfaced");
+
+    let err = last_err.lock().await.clone();
+    assert!(
+        err.as_deref()
+            .unwrap_or_default()
+            .contains("dead_letter_topic"),
+        "expected dead_letter_topic error, got: {err:?}"
+    );
+
+    sub.close().await.ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_generated_consumer_name_has_random_suffix() {
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(backend, StreamBusOptions::default()).expect("construct bus");
+
+    let cfg = || SubscriptionConfig {
+        topic: "evt.cn-rand".to_string(),
+        consumer_group: "cg.cn-rand".to_string(),
+        consumer_name: String::new(),
+        ack_mode: AckMode::AutoOnHandlerSuccess,
+        max_in_flight: 1,
+        ..Default::default()
+    };
+
+    let (tx_a, _rx_a) = mpsc::channel(1);
+    let (tx_b, _rx_b) = mpsc::channel(1);
+    let sub_a = bus
+        .subscribe(cfg(), AutoAckHandler { tx: tx_a })
+        .await
+        .expect("subscribe a");
+    let sub_b = bus
+        .subscribe(cfg(), AutoAckHandler { tx: tx_b })
+        .await
+        .expect("subscribe b");
+
+    assert_ne!(
+        sub_a.name(),
+        sub_b.name(),
+        "auto-generated consumer names must be unique even at high spawn rate"
+    );
+
+    sub_a.close().await.ok();
+    sub_b.close().await.ok();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subscription_is_running_flips_on_close() {
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(backend, StreamBusOptions::default()).expect("construct bus");
+
+    let (tx, _rx) = mpsc::channel(1);
+    let sub = bus
+        .subscribe(
+            SubscriptionConfig {
+                topic: "evt.is-running".to_string(),
+                consumer_group: "cg.is-running".to_string(),
+                consumer_name: "consumer-1".to_string(),
+                ack_mode: AckMode::AutoOnHandlerSuccess,
+                max_in_flight: 1,
+                ..Default::default()
+            },
+            AutoAckHandler { tx },
+        )
+        .await
+        .expect("subscribe");
+
+    assert!(sub.is_running());
+    sub.close().await.expect("close");
+    assert!(!sub.is_running());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publish_rejects_topic_with_control_char() {
+    let backend = Arc::new(MemoryStreamBackend::default());
+    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
+
+    let mut msg = message("evt.ok", "uid-1");
+    msg.topic = "evt.\u{0007}bell".to_string();
+    let err = bus
+        .publish(msg, PublishOptions::default())
+        .await
+        .expect_err("control char in topic must be rejected");
+    assert!(matches!(err, EventBusError::Validation(_)));
+    assert_eq!(backend.stream_len("evt.\u{0007}bell").await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn error_observer_receives_ack_flush_failures() {
+    #[derive(Default)]
+    struct ScopeRecorder {
+        scopes: Mutex<Vec<ErrorScope>>,
+    }
+
+    impl ErrorObserver for ScopeRecorder {
+        fn on_error(&self, scope: ErrorScope, _err: &EventBusError) {
+            // The observer hook is sync, but in a test we want to record into
+            // an async-aware structure — `try_lock` keeps the hook non-blocking.
+            if let Ok(mut g) = self.scopes.try_lock() {
+                g.push(scope);
+            }
+        }
+    }
+
+    let recorder = Arc::new(ScopeRecorder::default());
+    let backend = Arc::new(FailingAckBackend::default());
+    let bus = StreamBus::new(
+        backend,
+        StreamBusOptions::default().with_error_observer(recorder.clone()),
+    )
+    .expect("construct bus");
+
+    let (tx, mut rx) = mpsc::channel(1);
+    let sub = bus
+        .subscribe(
+            SubscriptionConfig {
+                topic: "evt.observer-ack".to_string(),
+                consumer_group: "cg.observer-ack".to_string(),
+                consumer_name: "consumer-1".to_string(),
+                ack_mode: AckMode::AutoOnHandlerSuccess,
+                max_in_flight: 1,
+                ..Default::default()
+            },
+            AutoAckHandler { tx },
+        )
+        .await
+        .expect("subscribe");
+
+    bus.publish(
+        message("evt.observer-ack", "uid-obs"),
+        PublishOptions::default(),
+    )
+    .await
+    .expect("publish");
+
+    timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("handler ran")
+        .expect("message");
+
+    let _ = sub.close().await; // returns Err because of the failing ack
+    let scopes = recorder.scopes.lock().await.clone();
+    assert!(
+        scopes.contains(&ErrorScope::AckFlush),
+        "expected AckFlush observation, saw: {scopes:?}"
     );
 }

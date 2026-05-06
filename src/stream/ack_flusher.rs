@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use crate::EventBusError;
 
 use super::backend::StreamBackend;
+use super::observer::{ErrorObserver, ErrorScope};
 
 const DEFAULT_ACK_BATCH_SIZE: usize = 64;
 const DEFAULT_ACK_FLUSH_INTERVAL: Duration = Duration::from_millis(2);
@@ -34,6 +35,7 @@ pub(super) fn spawn<B: StreamBackend>(
     group: String,
     batch_size: usize,
     flush_interval: Duration,
+    error_observer: Option<Arc<dyn ErrorObserver>>,
 ) -> (mpsc::Sender<AckRequest>, JoinHandle<()>) {
     let batch_size = if batch_size == 0 {
         DEFAULT_ACK_BATCH_SIZE
@@ -88,7 +90,14 @@ pub(super) fn spawn<B: StreamBackend>(
                 }
             }
 
-            flush_batch(&backend, &stream, &group, &mut buf).await;
+            flush_batch(
+                &backend,
+                &stream,
+                &group,
+                &mut buf,
+                error_observer.as_deref(),
+            )
+            .await;
         }
 
         // Final drain after all senders dropped.
@@ -96,7 +105,14 @@ pub(super) fn spawn<B: StreamBackend>(
             buf.push(req);
         }
         if !buf.is_empty() {
-            flush_batch(&backend, &stream, &group, &mut buf).await;
+            flush_batch(
+                &backend,
+                &stream,
+                &group,
+                &mut buf,
+                error_observer.as_deref(),
+            )
+            .await;
         }
     });
 
@@ -108,24 +124,35 @@ async fn flush_batch<B: StreamBackend>(
     stream: &str,
     group: &str,
     buf: &mut Vec<AckRequest>,
+    error_observer: Option<&dyn ErrorObserver>,
 ) {
     if buf.is_empty() {
         return;
     }
 
-    let ids: Vec<String> = buf.iter().map(|r| r.id.clone()).collect();
-    let result = backend.ack_many(stream, group, &ids).await;
+    // Move IDs out of each request to avoid the per-ack `String` clone — the
+    // request is consumed in the same batch anyway, and we still have the
+    // oneshot `done` channel to reply on.
+    let mut ids: Vec<String> = Vec::with_capacity(buf.len());
+    let mut dones = Vec::with_capacity(buf.len());
+    for req in buf.drain(..) {
+        ids.push(req.id);
+        dones.push(req.done);
+    }
 
-    match result {
+    match backend.ack_many(stream, group, &ids).await {
         Ok(()) => {
-            for req in buf.drain(..) {
-                let _ = req.done.send(Ok(()));
+            for done in dones {
+                let _ = done.send(Ok(()));
             }
         }
         Err(err) => {
+            if let Some(obs) = error_observer {
+                obs.on_error(ErrorScope::AckFlush, &err);
+            }
             let msg = err.to_string();
-            for req in buf.drain(..) {
-                let _ = req.done.send(Err(EventBusError::Connection(format!(
+            for done in dones {
+                let _ = done.send(Err(EventBusError::Connection(format!(
                     "batched xack on {stream}: {msg}"
                 ))));
             }

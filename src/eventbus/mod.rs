@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
@@ -120,6 +120,16 @@ impl PublishOptions {
         self
     }
 
+    pub fn with_expected_content_type(mut self, content_type: impl Into<String>) -> Self {
+        self.expected_content_type = Some(content_type.into());
+        self
+    }
+
+    pub fn with_expected_event_version(mut self, version: impl Into<String>) -> Self {
+        self.expected_event_version = Some(version.into());
+        self
+    }
+
     pub fn validate(&self) -> Result<(), EventBusError> {
         if self.require_ordered_key
             && self
@@ -157,12 +167,26 @@ impl PublishOptions {
 // Subscription config
 // ---------------------------------------------------------------------------
 
+/// Subscription configuration.
+///
+/// ## In-flight sizing precedence
+///
+/// During [`SubscriptionConfig::apply_defaults`] the bus reconciles three
+/// related inputs:
+///
+/// 1. If `backpressure` is set, its `max_in_flight` / `max_pending_acks` seed
+///    the matching fields when those are still `0`. Setting both
+///    `backpressure.max_in_flight` and `max_in_flight` to **different**
+///    non-zero values is a configuration error surfaced by `validate`.
+/// 2. `max_in_flight` falls back to `1` if still unset.
+/// 3. `max_pending_acks` falls back to `2 * max_in_flight`.
+/// 4. If `backpressure` was unset, one is synthesized from the resolved
+///    `max_in_flight` / `max_pending_acks`.
 #[derive(Debug, Clone)]
 pub struct SubscriptionConfig {
     pub topic: Topic,
     pub consumer_group: String,
     pub consumer_name: String,
-    pub concurrency: usize,
     pub max_retry: usize,
     pub retry_backoff: Duration,
     pub dead_letter_topic: Option<Topic>,
@@ -182,7 +206,6 @@ impl Default for SubscriptionConfig {
             topic: String::new(),
             consumer_group: String::new(),
             consumer_name: String::new(),
-            concurrency: 0,
             max_retry: 0,
             retry_backoff: Duration::ZERO,
             dead_letter_topic: None,
@@ -223,11 +246,7 @@ impl SubscriptionConfig {
         }
 
         if self.max_in_flight == 0 {
-            self.max_in_flight = if self.concurrency > 0 {
-                self.concurrency
-            } else {
-                1
-            };
+            self.max_in_flight = 1;
         }
         if self.max_pending_acks == 0 {
             self.max_pending_acks = self.max_in_flight * 2;
@@ -347,20 +366,15 @@ pub trait Bus: Publisher + Subscriber + Send + Sync {}
 
 impl<T> Bus for T where T: Publisher + Subscriber + Send + Sync {}
 
-pub trait EventBus: Bus {}
-
-impl<T> EventBus for T where T: Bus {}
-
+/// Pluggable wire-format encoder for [`Message`].
+///
+/// Object-safe: backends store an `Arc<dyn Codec>` and dispatch through it.
+/// Implementations own the full envelope so swapping codecs is a binary
+/// decision (e.g. JSON for cross-language compat vs. binary for throughput).
 pub trait Codec: Send + Sync {
     fn name(&self) -> &str;
-
-    fn serialize<T: Serialize>(&self, value: &T) -> Result<Vec<u8>, EventBusError>
-    where
-        Self: Sized;
-
-    fn deserialize<T: DeserializeOwned>(&self, data: &[u8]) -> Result<T, EventBusError>
-    where
-        Self: Sized;
+    fn encode(&self, msg: &Message) -> Result<Vec<u8>, EventBusError>;
+    fn decode(&self, bytes: &[u8]) -> Result<Message, EventBusError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn subscription_config_derives_ack_mode_from_auto_ack() {
+    fn subscription_config_preserves_explicit_ack_mode() {
         let mut cfg = SubscriptionConfig {
             ack_mode: AckMode::AutoOnHandlerSuccess,
             max_in_flight: 8,

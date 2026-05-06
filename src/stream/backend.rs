@@ -1,12 +1,15 @@
 use std::{future::Future, sync::Arc, time::Duration};
 
-use crate::{DeliveryState, EventBusError, Message};
+use crate::{EventBusError, Message, PartialDeliveryState};
 
 #[derive(Debug, Clone)]
 pub struct ClaimedMessage {
     pub id: String,
     pub message: Arc<Message>,
-    pub state: DeliveryState,
+    /// Backend-supplied half of the delivery state. The bus layer combines
+    /// this with the subscription's retry budget to produce the full
+    /// [`crate::DeliveryState`] handed to handlers.
+    pub state: PartialDeliveryState,
 }
 
 pub trait StreamBackend: Send + Sync + 'static {
@@ -74,6 +77,23 @@ pub trait StreamBackend: Send + Sync + 'static {
             }
             Ok(())
         }
+    }
+
+    /// Drop any per-(stream, group, consumer) state cached inside the backend
+    /// (e.g., XAUTOCLAIM cursors). Called by [`StreamBus`] on subscription
+    /// shutdown so backends do not accumulate cursor entries indefinitely
+    /// under churn (auto-generated consumer names, restarting pods, etc.).
+    ///
+    /// The default impl is a no-op; backends without per-consumer state can
+    /// ignore it.
+    #[allow(unused_variables)]
+    fn forget_consumer(
+        &self,
+        stream: &str,
+        group: &str,
+        consumer: &str,
+    ) -> impl Future<Output = ()> + Send {
+        async {}
     }
 }
 
