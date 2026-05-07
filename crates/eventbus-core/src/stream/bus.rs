@@ -340,8 +340,14 @@ impl<B: StreamBackend> StreamBus<B> {
         let mut results: Vec<Option<Result<MessageId, EventBusError>>> =
             std::iter::repeat_with(|| None).take(total).collect();
 
+        // Pre-fill each spawned slot with a placeholder so a task panic
+        // (which loses its captured `idx` inside JoinError) still leaves a
+        // correctly-attributed error in the right slot.
         for _ in 0..parallelism {
             if let Some((idx, prep)) = iter.next() {
+                results[idx] = Some(Err(EventBusError::Internal(
+                    "publish task did not complete".into(),
+                )));
                 let backend = Arc::clone(&self.backend);
                 tasks.spawn(async move {
                     let r = match prep {
@@ -357,17 +363,25 @@ impl<B: StreamBackend> StreamBus<B> {
         }
 
         while let Some(joined) = tasks.join_next().await {
-            let (idx, r) = match joined {
-                Ok(p) => p,
-                Err(je) => {
-                    let idx = results.iter().position(Option::is_none).unwrap_or(0);
-                    (idx, Err(EventBusError::source("publish task panicked", je)))
+            match joined {
+                Ok((idx, r)) => {
+                    if idx < results.len() {
+                        results[idx] = Some(r);
+                    }
                 }
-            };
-            if idx < results.len() {
-                results[idx] = Some(r);
+                Err(je) => {
+                    // The placeholder stays in place at the panicking task's
+                    // slot; we surface the panic via the observer rather than
+                    // guessing the slot.
+                    if let Some(obs) = self.options.error_observer.as_ref() {
+                        obs.on_panic(ErrorScope::HandlerPanic, &je.to_string());
+                    }
+                }
             }
             if let Some((next_idx, prep)) = iter.next() {
+                results[next_idx] = Some(Err(EventBusError::Internal(
+                    "publish task did not complete".into(),
+                )));
                 let backend = Arc::clone(&self.backend);
                 tasks.spawn(async move {
                     let r = match prep {
@@ -805,6 +819,13 @@ impl<B: StreamBackend> Publisher for StreamBus<B> {
 }
 
 impl<B: StreamBackend> StreamBus<B> {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, cfg, handler),
+            fields(topic = %cfg.topic, group = %cfg.consumer_group)
+        )
+    )]
     async fn subscribe_inner(
         &self,
         mut cfg: SubscriptionConfig,

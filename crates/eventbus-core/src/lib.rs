@@ -38,7 +38,7 @@ pub use contract::{
 };
 pub use error::EventBusError;
 pub use eventbus::{
-    BatchOutcome, Bus, Codec, ConsumerGroup, ConsumerName, Delivery, DeliveryControl,
+    BatchError, BatchOutcome, Bus, Codec, ConsumerGroup, ConsumerName, Delivery, DeliveryControl,
     DeliveryHandle, Handler, Headers, Message, MessageId, PublishOptions, Publisher, PublisherExt,
     Subscriber, SubscriberExt, Subscription, SubscriptionConfig, SubscriptionConfigBuilder, Topic,
 };

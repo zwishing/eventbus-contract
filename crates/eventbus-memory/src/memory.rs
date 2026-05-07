@@ -19,7 +19,7 @@ use eventbus_core::{EventBusError, Message, PartialDeliveryState};
 /// deliberate: it makes the memory backend a deterministic reference for
 /// correctness tests, but it is **not representative of production
 /// throughput** and must not be used for benchmarking the `StreamBus`
-/// concurrency model. Use [`eventbus_redis::RedisBackend`] (behind the
+/// concurrency model. Use `eventbus_redis::RedisBackend` (behind the
 /// `redis` feature on the facade) for any performance-oriented workload.
 #[derive(Debug, Default)]
 pub struct MemoryStreamBackend {

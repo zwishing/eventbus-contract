@@ -74,7 +74,7 @@ pub trait StreamBackend: Send + Sync + 'static {
     ///
     /// Redis Streams `XACK` accepts N IDs in one command, turning what would
     /// be N RTTs into one. Backends without native batch support can rely on
-    /// the default implementation (a serial loop over [`ack`]), but the point
+    /// the default implementation (a serial loop over [`Self::ack`]), but the point
     /// of this method is to let the Redis backend collapse the round-trips.
     ///
     /// # Contract
@@ -99,7 +99,7 @@ pub trait StreamBackend: Send + Sync + 'static {
     }
 
     /// Drop any per-(stream, group, consumer) state cached inside the backend
-    /// (e.g., XAUTOCLAIM cursors). Called by [`StreamBus`] on subscription
+    /// (e.g., XAUTOCLAIM cursors). Called by [`crate::stream::StreamBus`] on subscription
     /// shutdown so backends do not accumulate cursor entries indefinitely
     /// under churn (auto-generated consumer names, restarting pods, etc.).
     ///

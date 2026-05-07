@@ -35,7 +35,9 @@ use eventbus_contract::prelude::*;
 
 ```rust
 use std::sync::Arc;
-use eventbus_contract::core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
+
+use eventbus_contract::core::stream::{StreamBus, StreamBusOptions};
+use eventbus_contract::memory::MemoryStreamBackend;
 use eventbus_contract::prelude::*;
 
 #[tokio::main]
@@ -45,8 +47,8 @@ async fn main() -> Result<(), EventBusError> {
 
     struct Echo;
     impl Handler for Echo {
-        fn handle(&self, d: Box<dyn eventbus_contract::core::DeliveryHandle>)
-            -> eventbus_contract::core::BoxFuture<'_, Result<(), EventBusError>>
+        fn handle(&self, d: Box<dyn DeliveryHandle>)
+            -> BoxFuture<'_, Result<(), EventBusError>>
         {
             Box::pin(async move { d.ack().await })
         }

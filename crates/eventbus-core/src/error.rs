@@ -47,10 +47,12 @@ impl EventBusError {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// fn parse_payload(bytes: &[u8]) -> Result<Event, EventBusError> {
-    ///     serde_json::from_slice(bytes)
-    ///         .map_err(|e| EventBusError::source("decoding event payload", e))
+    /// ```no_run
+    /// use eventbus_core::EventBusError;
+    ///
+    /// fn parse_int(s: &str) -> Result<u32, EventBusError> {
+    ///     s.parse::<u32>()
+    ///         .map_err(|e| EventBusError::source("parsing retry attempt", e))
     /// }
     /// ```
     pub fn source<E>(context: impl Into<String>, err: E) -> Self

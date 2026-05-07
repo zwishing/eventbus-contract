@@ -804,7 +804,39 @@ impl BatchOutcome {
     pub fn errors(&self) -> impl Iterator<Item = &EventBusError> {
         self.results.iter().filter_map(|r| r.as_ref().err())
     }
+
+    /// Convert to `Ok(Vec<MessageId>)` when every slot succeeded, or
+    /// `Err(BatchError { outcome: self })` otherwise. The error variant
+    /// preserves the full outcome so callers can still inspect partial
+    /// successes.
+    pub fn into_result(self) -> Result<Vec<MessageId>, BatchError> {
+        if self.all_ok() {
+            Ok(self.results.into_iter().filter_map(Result::ok).collect())
+        } else {
+            Err(BatchError { outcome: self })
+        }
+    }
 }
+
+/// Wraps a partially-failed [`BatchOutcome`] for callers that want a single
+/// `Result`. Carries the full outcome so partial successes remain inspectable.
+#[derive(Debug)]
+pub struct BatchError {
+    pub outcome: BatchOutcome,
+}
+
+impl std::fmt::Display for BatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "publish_batch had {} failure(s) out of {} messages",
+            self.outcome.err_count(),
+            self.outcome.results.len()
+        )
+    }
+}
+
+impl std::error::Error for BatchError {}
 
 pub trait Publisher: Send + Sync {
     fn publish(
@@ -930,6 +962,30 @@ mod tests {
     fn publish_options_rejects_zero_ttl() {
         let opts = PublishOptions::new().with_topic_ttl(Duration::ZERO);
         assert!(opts.validate().is_err());
+    }
+
+    #[test]
+    fn batch_outcome_into_result_ok_when_all_succeed() {
+        let outcome = BatchOutcome {
+            results: vec![Ok(MessageId::new("a")), Ok(MessageId::new("b"))],
+        };
+        let res = outcome.into_result().expect("should be ok");
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].as_str(), "a");
+    }
+
+    #[test]
+    fn batch_outcome_into_result_preserves_outcome_on_failure() {
+        let outcome = BatchOutcome {
+            results: vec![
+                Ok(MessageId::new("a")),
+                Err(EventBusError::Validation("bad".into())),
+            ],
+        };
+        let err = outcome.into_result().expect_err("should be err");
+        assert_eq!(err.outcome.results.len(), 2);
+        assert_eq!(err.outcome.ok_count(), 1);
+        assert_eq!(err.outcome.err_count(), 1);
     }
 
     fn topic() -> Topic {
