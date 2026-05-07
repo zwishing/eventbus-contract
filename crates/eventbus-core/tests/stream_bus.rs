@@ -754,6 +754,10 @@ async fn publish_batch_rejects_oversize_payload_before_publishing_any_message() 
     // Topic invalidity is unreachable post-PR4 (Topic::new validates at
     // construction). The remaining publish-time validation path is the
     // payload-size check, exercised here.
+    //
+    // Post-PR5 semantics: `publish_batch` returns Ok(BatchOutcome) with one
+    // Result per input — a per-message validation failure is recorded in the
+    // outcome rather than aborting the whole batch.
     let backend = Arc::new(MemoryStreamBackend::default());
     let bus = StreamBus::new(
         backend.clone(),
@@ -761,17 +765,25 @@ async fn publish_batch_rejects_oversize_payload_before_publishing_any_message() 
     )
     .expect("construct bus");
 
+    // Construct a small valid payload that fits inside the 8-byte cap.
+    let mut small = message("evt.batch.atomic", "uid-valid");
+    small.payload = bytes::Bytes::from_static(b"ok");
     let mut oversize = message("evt.batch.atomic", "uid-invalid");
     oversize.payload = bytes::Bytes::from_static(b"this payload is too large");
-    let messages = vec![message("evt.batch.atomic", "uid-valid"), oversize];
+    let messages = vec![small, oversize];
 
-    let err = bus
+    let outcome = bus
         .publish_batch(messages, PublishOptions::default())
         .await
-        .expect_err("batch validation should fail");
+        .expect("publish_batch returns BatchOutcome");
 
-    assert!(matches!(err, EventBusError::Validation(_)));
-    assert_eq!(backend.stream_len("evt.batch.atomic").await, 0);
+    assert_eq!(outcome.results.len(), 2);
+    assert!(outcome.results[0].is_ok(), "small message should succeed");
+    assert!(matches!(
+        outcome.results[1].as_ref().err(),
+        Some(EventBusError::Validation(_))
+    ));
+    assert_eq!(backend.stream_len("evt.batch.atomic").await, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
