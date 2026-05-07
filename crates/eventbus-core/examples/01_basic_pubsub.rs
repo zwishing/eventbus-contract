@@ -17,7 +17,7 @@ use std::time::Duration;
 use chrono::Utc;
 use eventbus_core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
 use eventbus_core::{
-    AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig,
+    AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
 };
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -31,10 +31,10 @@ struct PrintHandler {
 }
 
 impl Handler for PrintHandler {
-    fn handle<'a>(
-        &'a self,
-        delivery: &'a (dyn Delivery + Send + Sync),
-    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+    fn handle(
+        &self,
+        delivery: Box<dyn DeliveryHandle>,
+    ) -> eventbus_core::BoxFuture<'_, Result<(), EventBusError>> {
         Box::pin(async move {
             let msg = delivery.message();
             println!(
@@ -62,14 +62,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = mpsc::channel(8);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "user.registered".to_string(),
-                consumer_group: "notification-service".to_string(),
-                consumer_name: "worker-1".to_string(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("user.registered").expect("topic"),
+                eventbus_core::ConsumerGroup::new("notification-service").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("worker-1").expect("consumer name"))
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             PrintHandler { tx },
         )
         .await?;
@@ -79,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     bus.publish(
         Message {
             uid: "evt-001".to_string(),
-            topic: "user.registered".to_string(),
+            topic: eventbus_core::Topic::new("user.registered").expect("topic"),
             key: "user-42".to_string(),
             kind: "UserRegistered".to_string(),
             source: "auth-service".to_string(),

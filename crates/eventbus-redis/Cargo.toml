@@ -12,6 +12,6 @@ default = []
 tls = ["redis/tls-native-tls", "redis/tokio-native-tls-comp"]
 
 [dependencies]
-eventbus-core = { path = "../eventbus-core", version = "0.2.0-alpha.1", features = ["redis-backend"] }
+eventbus-core = { path = "../eventbus-core", version = "0.2.0", features = ["redis-backend"] }
 redis.workspace = true
 serde_json.workspace = true

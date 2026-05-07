@@ -11,7 +11,7 @@ use eventbus_core::{
 
 #[test]
 fn root_exports_go_parity_contracts() {
-    let _topic: Topic = "orders.created".to_string();
+    let _topic: Topic = Topic::new("orders.created").expect("topic");
     let _headers = Headers::default();
 
     let matrix = GuaranteeMatrix {
@@ -176,24 +176,6 @@ fn delivery_trait_exposes_delivery_inspection() {
         fn message(&self) -> &Message {
             panic!("test helper does not expose a message reference")
         }
-
-        fn ack(&self) -> eventbus_core::BoxFuture<'_, Result<(), eventbus_core::EventBusError>> {
-            Box::pin(async move { Ok(()) })
-        }
-
-        fn nack(
-            &self,
-            _reason: &(dyn std::error::Error + Send + Sync),
-        ) -> eventbus_core::BoxFuture<'_, Result<(), eventbus_core::EventBusError>> {
-            Box::pin(async move { Ok(()) })
-        }
-
-        fn retry(
-            &self,
-            _reason: &(dyn std::error::Error + Send + Sync),
-        ) -> eventbus_core::BoxFuture<'_, Result<(), eventbus_core::EventBusError>> {
-            Box::pin(async move { Ok(()) })
-        }
     }
 
     assert_delivery_has_inspector(&DeliveryWithInspection);
@@ -206,7 +188,7 @@ fn assert_delivery_inspector<T: DeliveryInspector>() {}
 fn message_with_headers(headers: Headers) -> Message {
     Message {
         uid: "msg-1".into(),
-        topic: "orders.created".into(),
+        topic: eventbus_core::Topic::new("orders.created").expect("topic"),
         key: "order-1".into(),
         kind: "orders.created".into(),
         source: "tests".into(),

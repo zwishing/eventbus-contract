@@ -1,4 +1,5 @@
 mod ack_flusher;
+mod auto_finalize;
 mod backend;
 pub mod backends;
 mod bus;

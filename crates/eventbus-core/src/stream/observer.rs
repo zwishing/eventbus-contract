@@ -42,6 +42,13 @@ pub enum ErrorScope {
     /// A batched ack flush to the backend failed. The waiters got the error
     /// via their oneshot channels; this hook fires once for the whole batch.
     AckFlush,
+    /// Subscription was dropped without `close()` having been called. Fired
+    /// at most once from the [`Drop`] impl on `StreamSubscription`.
+    Drop,
+    /// A delivery task panicked. The panic message is delivered to
+    /// [`ErrorObserver::on_panic`]; this scope tags any associated
+    /// `on_error` invocation.
+    HandlerPanic,
 }
 
 /// Receives bus-level transient errors so they can be surfaced to metrics
@@ -52,4 +59,8 @@ pub enum ErrorScope {
 /// and return.
 pub trait ErrorObserver: Send + Sync {
     fn on_error(&self, scope: ErrorScope, err: &EventBusError);
+
+    /// Called when a delivery task panics. Default empty for backwards
+    /// compatibility — implementors can override to route to crash metrics.
+    fn on_panic(&self, _scope: ErrorScope, _payload: &str) {}
 }
