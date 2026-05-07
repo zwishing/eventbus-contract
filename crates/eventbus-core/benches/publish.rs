@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use criterion::{criterion_group, criterion_main, Criterion};
-use eventbus_core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
+use eventbus_core::stream::{StreamBus, StreamBusOptions};
 use eventbus_core::{Headers, Message, PublishOptions, Publisher, Topic};
+use eventbus_memory::MemoryStreamBackend;
 use tokio::runtime::Runtime;
 
 fn message(uid: &str) -> Message {

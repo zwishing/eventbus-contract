@@ -2,33 +2,25 @@
 //!
 //! Demonstrates using `RedisBackend` with a real Redis server.
 //!
-//! Requires the `redis-backend` feature and a running Redis instance:
+//! Requires a running Redis instance:
 //!
 //! ```text
 //! # Start Redis (Docker)
 //! docker run --rm -p 6379:6379 redis:7
 //!
 //! # Run the example
-//! cargo run --example 04_redis_backend --features redis-backend
+//! cargo run --example 04_redis_backend
 //! ```
 //!
 //! The wire format is JSON-compatible with the Go `StreamBus`:
 //! each entry is stored as `XADD <topic> * message <json>`.
 
-#[cfg(not(feature = "redis-backend"))]
-fn main() {
-    eprintln!("This example requires the `redis-backend` feature.");
-    eprintln!("Run with: cargo run --example 04_redis_backend --features redis-backend");
-    std::process::exit(1);
-}
-
-#[cfg(feature = "redis-backend")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
 
     use chrono::Utc;
-    use eventbus_core::stream::{StreamBus, StreamBusOptions};
+    use eventbus_core::stream::StreamBusOptions;
     use eventbus_core::{
         AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
     };
@@ -74,8 +66,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = redis::Client::open(redis_url.as_str())?;
     let conn = client.get_multiplexed_async_connection().await?;
 
-    // `from_connection` wraps the connection in a RedisBackend and creates the bus.
-    let bus = StreamBus::from_connection(conn, StreamBusOptions::default())?;
+    // `stream_bus_from_connection` wraps the connection in a RedisBackend
+    // (using the default JsonCodec) and creates the bus.
+    let bus = eventbus_redis::stream_bus_from_connection(conn, StreamBusOptions::default())?;
 
     // -----------------------------------------------------------------------
     // Subscribe
@@ -140,7 +133,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(feature = "redis-backend")]
 fn uuid() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now()

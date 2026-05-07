@@ -1,18 +1,16 @@
-//! Built-in [`Codec`] implementations.
+//! Built-in [`Codec`](eventbus_core::Codec) implementations for the
+//! [`eventbus-redis`] crate.
 //!
 //! Currently:
 //! - [`JsonCodec`]: wire-compatible with the Go `StreamBus`. Encodes a
 //!   `{"message": {...}}` envelope (matching `redisStreamPayload` in Go).
-//!   Available with the `redis-backend` feature (which pulls in `serde_json`).
 
-#[cfg(feature = "redis-backend")]
 pub use json::JsonCodec;
 
-#[cfg(feature = "redis-backend")]
 mod json {
     use serde::{Deserialize, Serialize};
 
-    use crate::{Codec, EventBusError, Message};
+    use eventbus_core::{Codec, EventBusError, Message};
 
     /// JSON codec wrapping [`Message`] in a `{"message": ...}` envelope.
     ///
@@ -60,7 +58,7 @@ mod json {
         fn sample() -> Message {
             Message {
                 uid: "u".into(),
-                topic: crate::Topic::new("t").expect("topic"),
+                topic: eventbus_core::Topic::new("t").expect("topic"),
                 key: "k".into(),
                 kind: "Kind".into(),
                 source: "s".into(),

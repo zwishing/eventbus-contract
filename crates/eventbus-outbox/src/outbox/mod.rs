@@ -3,8 +3,8 @@ pub mod dead_letter;
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 
-use crate::error::EventBusError;
-use crate::eventbus::{Headers, Topic};
+use eventbus_core::{EventBusError, Headers, Topic};
+
 use crate::outbox::dead_letter::DeadLetterReason;
 
 // ---------------------------------------------------------------------------
