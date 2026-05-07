@@ -1,5 +1,10 @@
 #![allow(async_fn_in_trait)]
 
+use std::{future::Future, pin::Pin};
+
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub type BoxedError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
 pub mod codec;
 pub mod consumer;
 pub mod contract;
