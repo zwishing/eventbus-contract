@@ -8,8 +8,8 @@ use tokio::{
 };
 
 use crate::{
-    AckMode, Delivery, EventBusError, Handler, Message, PublishOptions, Publisher, Subscriber,
-    SubscriptionConfig,
+    AckMode, BatchOutcome, Delivery, EventBusError, Handler, Message, MessageId, PublishOptions,
+    Publisher, Subscriber, SubscriptionConfig,
 };
 
 use super::{
@@ -265,14 +265,19 @@ impl<B: StreamBackend> StreamBus<B> {
         })
     }
 
-    pub async fn publish(&self, msg: Message, opts: PublishOptions) -> Result<(), EventBusError> {
+    pub async fn publish(
+        &self,
+        msg: Message,
+        opts: PublishOptions,
+    ) -> Result<MessageId, EventBusError> {
         <Self as Publisher>::publish(self, msg, opts).await
     }
 
-    pub async fn publish_batch<I>(&self, msgs: I, opts: PublishOptions) -> Result<(), EventBusError>
-    where
-        I: IntoIterator<Item = Message> + Send,
-    {
+    pub async fn publish_batch(
+        &self,
+        msgs: Vec<Message>,
+        opts: PublishOptions,
+    ) -> Result<BatchOutcome, EventBusError> {
         <Self as Publisher>::publish_batch(self, msgs, opts).await
     }
 
@@ -291,7 +296,7 @@ impl<B: StreamBackend> StreamBus<B> {
         &self,
         message: Message,
         options: &PublishOptions,
-    ) -> Result<(), EventBusError> {
+    ) -> Result<MessageId, EventBusError> {
         options.validate()?;
 
         if let Some(delay) = options.delay {
@@ -301,8 +306,81 @@ impl<B: StreamBackend> StreamBus<B> {
         let message = Self::prepare_message(message, options, self.options.max_payload_bytes)?;
 
         let topic = message.topic.clone();
-        self.backend.publish(&topic, message).await?;
-        Ok(())
+        let id = self.backend.publish(&topic, message).await?;
+        Ok(MessageId::new(id))
+    }
+
+    async fn publish_batch_impl(
+        &self,
+        msgs: Vec<Message>,
+        opts: PublishOptions,
+    ) -> Result<BatchOutcome, EventBusError> {
+        opts.validate()?;
+
+        if let Some(delay) = opts.delay {
+            tokio::time::sleep(delay).await;
+        }
+
+        let max_payload_bytes = self.options.max_payload_bytes;
+        let prepared_messages = msgs
+            .into_iter()
+            .map(|message| Self::prepare_message(message, &opts, max_payload_bytes))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let parallelism = prepared_messages
+            .len()
+            .clamp(1, self.options.publish_batch_parallelism);
+        let mut pending = prepared_messages.into_iter();
+        let mut tasks = JoinSet::new();
+        let mut first_error: Option<EventBusError> = None;
+        let mut ids: Vec<MessageId> = Vec::new();
+
+        for _ in 0..parallelism {
+            let Some(message) = pending.next() else {
+                break;
+            };
+            let backend = Arc::clone(&self.backend);
+            tasks.spawn(async move {
+                let topic = message.topic.clone();
+                backend.publish(&topic, message).await.map(MessageId::new)
+            });
+        }
+
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(Ok(id)) => ids.push(id),
+                Ok(Err(err)) => {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(EventBusError::Internal(format!(
+                            "publish batch task failed: {err}"
+                        )));
+                    }
+                }
+            }
+
+            if first_error.is_none() {
+                if let Some(message) = pending.next() {
+                    let backend = Arc::clone(&self.backend);
+                    tasks.spawn(async move {
+                        let topic = message.topic.clone();
+                        backend.publish(&topic, message).await.map(MessageId::new)
+                    });
+                }
+            }
+        }
+
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+
+        Ok(BatchOutcome {
+            results: ids.into_iter().map(Ok).collect(),
+        })
     }
 
     fn prepare_message(
@@ -632,77 +710,20 @@ impl<B: StreamBackend> StreamBus<B> {
 }
 
 impl<B: StreamBackend> Publisher for StreamBus<B> {
-    async fn publish(&self, msg: Message, opts: PublishOptions) -> Result<(), EventBusError> {
-        self.publish_inner(msg, &opts).await
+    fn publish(
+        &self,
+        msg: Message,
+        opts: PublishOptions,
+    ) -> crate::BoxFuture<'_, Result<MessageId, EventBusError>> {
+        Box::pin(async move { self.publish_inner(msg, &opts).await })
     }
 
-    async fn publish_batch<I>(&self, msgs: I, opts: PublishOptions) -> Result<(), EventBusError>
-    where
-        I: IntoIterator<Item = Message> + Send,
-    {
-        opts.validate()?;
-
-        if let Some(delay) = opts.delay {
-            tokio::time::sleep(delay).await;
-        }
-
-        let max_payload_bytes = self.options.max_payload_bytes;
-        let prepared_messages = msgs
-            .into_iter()
-            .map(|message| Self::prepare_message(message, &opts, max_payload_bytes))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let parallelism = prepared_messages
-            .len()
-            .clamp(1, self.options.publish_batch_parallelism);
-        let mut pending = prepared_messages.into_iter();
-        let mut tasks = JoinSet::new();
-        let mut first_error = None;
-
-        for _ in 0..parallelism {
-            let Some(message) = pending.next() else {
-                break;
-            };
-            let backend = Arc::clone(&self.backend);
-            tasks.spawn(async move {
-                let topic = message.topic.clone();
-                backend.publish(&topic, message).await.map(|_| ())
-            });
-        }
-
-        while let Some(result) = tasks.join_next().await {
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    if first_error.is_none() {
-                        first_error = Some(err);
-                    }
-                }
-                Err(err) => {
-                    if first_error.is_none() {
-                        first_error = Some(EventBusError::Internal(format!(
-                            "publish batch task failed: {err}"
-                        )));
-                    }
-                }
-            }
-
-            if first_error.is_none() {
-                if let Some(message) = pending.next() {
-                    let backend = Arc::clone(&self.backend);
-                    tasks.spawn(async move {
-                        let topic = message.topic.clone();
-                        backend.publish(&topic, message).await.map(|_| ())
-                    });
-                }
-            }
-        }
-
-        if let Some(err) = first_error {
-            return Err(err);
-        }
-
-        Ok(())
+    fn publish_batch(
+        &self,
+        msgs: Vec<Message>,
+        opts: PublishOptions,
+    ) -> crate::BoxFuture<'_, Result<BatchOutcome, EventBusError>> {
+        Box::pin(async move { self.publish_batch_impl(msgs, opts).await })
     }
 }
 

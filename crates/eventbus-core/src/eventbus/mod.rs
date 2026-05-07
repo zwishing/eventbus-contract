@@ -342,13 +342,81 @@ pub trait Subscription: Send + Sync {
     async fn close(&self) -> Result<(), EventBusError>;
 }
 
-pub trait Publisher: Send + Sync {
-    async fn publish(&self, msg: Message, opts: PublishOptions) -> Result<(), EventBusError>;
+/// Stream / queue identifier for a published message. PR 4 will harden this
+/// into a `#[repr(transparent)]` newtype with `Deref<Target = str>`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MessageId(pub String);
 
-    async fn publish_batch<I>(&self, msgs: I, opts: PublishOptions) -> Result<(), EventBusError>
-    where
-        I: IntoIterator<Item = Message> + Send;
+impl MessageId {
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
+
+/// Per-message result for `publish_batch`. PR 5 will populate `results`
+/// during a full re-implementation that no longer fails fast.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct BatchOutcome {
+    pub results: Vec<Result<MessageId, EventBusError>>,
+}
+
+impl BatchOutcome {
+    #[must_use]
+    pub fn all_ok(&self) -> bool {
+        self.results.iter().all(Result::is_ok)
+    }
+    #[must_use]
+    pub fn ok_count(&self) -> usize {
+        self.results.iter().filter(|r| r.is_ok()).count()
+    }
+    #[must_use]
+    pub fn err_count(&self) -> usize {
+        self.results.len() - self.ok_count()
+    }
+    pub fn errors(&self) -> impl Iterator<Item = &EventBusError> {
+        self.results.iter().filter_map(|r| r.as_ref().err())
+    }
+}
+
+pub trait Publisher: Send + Sync {
+    fn publish(
+        &self,
+        msg: Message,
+        opts: PublishOptions,
+    ) -> crate::BoxFuture<'_, Result<MessageId, EventBusError>>;
+
+    fn publish_batch(
+        &self,
+        msgs: Vec<Message>,
+        opts: PublishOptions,
+    ) -> crate::BoxFuture<'_, Result<BatchOutcome, EventBusError>>;
+}
+
+/// Convenience layer over [`Publisher`]. Generic methods that monomorphize
+/// for callers who don't need dynamic dispatch.
+pub trait PublisherExt: Publisher {
+    /// Publish an iterator of messages. Collects into `Vec` and delegates
+    /// to [`Publisher::publish_batch`]. The collect is mandatory because the
+    /// dyn-safe `publish_batch` cannot accept an opaque iterator.
+    fn publish_iter<I>(
+        &self,
+        msgs: I,
+        opts: PublishOptions,
+    ) -> crate::BoxFuture<'_, Result<BatchOutcome, EventBusError>>
+    where
+        I: IntoIterator<Item = Message> + Send + 'static,
+        I::IntoIter: Send,
+    {
+        let collected: Vec<Message> = msgs.into_iter().collect();
+        self.publish_batch(collected, opts)
+    }
+}
+
+impl<P: Publisher + ?Sized> PublisherExt for P {}
 
 pub trait Subscriber: Send + Sync {
     type Sub: Subscription;
