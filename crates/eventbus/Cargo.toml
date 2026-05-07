@@ -23,3 +23,25 @@ eventbus-memory = { path = "../eventbus-memory", version = "0.2.0", optional = t
 eventbus-redis = { path = "../eventbus-redis", version = "0.2.0", optional = true }
 eventbus-outbox = { path = "../eventbus-outbox", version = "0.2.0", optional = true }
 eventbus-integration = { path = "../eventbus-integration", version = "0.2.0", optional = true }
+
+[dev-dependencies]
+bytes.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+redis = { workspace = true }
+
+[[example]]
+name = "01_basic_pubsub"
+required-features = ["memory"]
+
+[[example]]
+name = "02_manual_ack_and_retry"
+required-features = ["memory"]
+
+[[example]]
+name = "03_competing_consumers"
+required-features = ["memory"]
+
+[[example]]
+name = "04_redis_backend"
+required-features = ["redis"]

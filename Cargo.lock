@@ -335,11 +335,15 @@ dependencies = [
 name = "eventbus"
 version = "0.2.0"
 dependencies = [
+ "bytes",
+ "chrono",
  "eventbus-core",
  "eventbus-integration",
  "eventbus-memory",
  "eventbus-outbox",
  "eventbus-redis",
+ "redis",
+ "tokio",
 ]
 
 [[package]]
@@ -349,13 +353,7 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
- "criterion",
- "eventbus-integration",
- "eventbus-memory",
- "eventbus-outbox",
- "eventbus-redis",
  "rand",
- "redis",
  "serde",
  "serde_json",
  "thiserror",
@@ -374,8 +372,11 @@ dependencies = [
 name = "eventbus-memory"
 version = "0.2.0"
 dependencies = [
+ "bytes",
  "chrono",
+ "criterion",
  "eventbus-core",
+ "serde_json",
  "tokio",
 ]
 
@@ -387,6 +388,7 @@ dependencies = [
  "chrono",
  "eventbus-core",
  "serde",
+ "tokio",
 ]
 
 [[package]]
