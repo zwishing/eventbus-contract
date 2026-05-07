@@ -13,7 +13,7 @@ eventbus-contract = "0.1"
 
 # After (0.2) — facade crate
 [dependencies]
-eventbus-contract = { version = "0.2", features = ["redis", "outbox"] }
+eventbus-contract = { version = "0.2", features = ["redis"] }
 ```
 
 ```rust
@@ -31,8 +31,8 @@ The single `eventbus-contract` crate is now a workspace:
 | `eventbus-core` | Object-safe traits + value types + the `StreamBus` |
 | `eventbus-memory` | In-process backend, default-on under the facade |
 | `eventbus-redis` | Redis Streams backend |
-| `eventbus-outbox` | Transactional outbox + dispatcher helpers |
-| `eventbus-integration` | DDD integration-event surface |
+| `eventbus-outbox` | Transactional outbox + dispatcher helpers (workspace-only in 0.2.0; awaiting reference impl, returns in 0.3.0) |
+| `eventbus-integration` | DDD integration-event surface (workspace-only in 0.2.0; returns in 0.3.0) |
 | `eventbus-contract` | Facade — re-exports the above behind feature flags |
 
 ## Handler signature

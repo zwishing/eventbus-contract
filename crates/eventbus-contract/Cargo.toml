@@ -13,16 +13,16 @@ categories = ["asynchronous", "network-programming"]
 default = ["memory"]
 memory = ["dep:eventbus-memory"]
 redis = ["dep:eventbus-redis"]
-outbox = ["dep:eventbus-outbox"]
-integration = ["dep:eventbus-integration"]
 tracing = ["eventbus-core/tracing"]
+# `outbox` and `integration` are workspace-only in 0.2.0 — the trait crates
+# are not yet published to crates.io because they have no reference impl.
+# They will return as features in 0.3.0 alongside a concrete impl crate
+# (e.g. `eventbus-postgres-outbox`).
 
 [dependencies]
 eventbus-core = { path = "../eventbus-core", version = "0.2.0" }
 eventbus-memory = { path = "../eventbus-memory", version = "0.2.0", optional = true }
 eventbus-redis = { path = "../eventbus-redis", version = "0.2.0", optional = true }
-eventbus-outbox = { path = "../eventbus-outbox", version = "0.2.0", optional = true }
-eventbus-integration = { path = "../eventbus-integration", version = "0.2.0", optional = true }
 
 [dev-dependencies]
 bytes.workspace = true

@@ -65,9 +65,12 @@ enforces "finalize at most once" at compile time.
 |---|---|
 | [`eventbus-memory`](https://crates.io/crates/eventbus-memory) | In-process `StreamBackend` for tests + dev |
 | [`eventbus-redis`](https://crates.io/crates/eventbus-redis) | Redis Streams `StreamBackend` + `JsonCodec` |
-| [`eventbus-outbox`](https://crates.io/crates/eventbus-outbox) | `OutboxStore` + `Dispatcher` + `DeadLetterStore` traits |
-| [`eventbus-integration`](https://crates.io/crates/eventbus-integration) | DDD `IntegrationEvent` + `MessageFactory` helpers |
-| [`eventbus-contract`](https://crates.io/crates/eventbus-contract) | Facade re-exporting all of the above behind feature flags |
+| [`eventbus-contract`](https://crates.io/crates/eventbus-contract) | Facade re-exporting the published crates behind feature flags |
+
+`eventbus-outbox` (transactional outbox + dispatcher traits) and
+`eventbus-integration` (DDD integration-event helpers) live in the
+workspace but are not published to crates.io until a reference
+implementation lands (planned for 0.3.0).
 
 ## Design notes
 

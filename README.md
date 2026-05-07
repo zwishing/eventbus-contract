@@ -5,7 +5,7 @@ in-process backend for tests.
 
 ```toml
 [dependencies]
-eventbus-contract = { version = "0.2", features = ["redis", "outbox"] }
+eventbus-contract = { version = "0.2", features = ["redis"] }
 ```
 
 ```rust
@@ -14,22 +14,26 @@ use eventbus_contract::prelude::*;
 
 ## Workspace layout
 
-| Crate | What it provides |
-|---|---|
-| `eventbus-core` | Object-safe traits (`Publisher`, `Subscriber`, `Handler`, `Delivery`, `DeliveryControl`), value types, the generic `StreamBus`, and the in-process `MemoryStreamBackend`. |
-| `eventbus-memory` | Re-exports `MemoryStreamBackend` behind the default-on `test-utils` feature. |
-| `eventbus-redis` | Production `RedisBackend` over `XADD` / `XREADGROUP` / `XACK` / `XAUTOCLAIM`. |
-| `eventbus-outbox` | Transactional outbox + dispatcher + dead-letter store traits. |
-| `eventbus-integration` | DDD integration-event helpers (`IntegrationEvent`, `MessageFactory`, `EventPublisher`). |
-| `eventbus-contract` | Facade — re-exports everything behind feature flags. |
+| Crate | What it provides | Published in 0.2.0 |
+|---|---|:---:|
+| `eventbus-core` | Object-safe traits (`Publisher`, `Subscriber`, `Handler`, `Delivery`, `DeliveryControl`), value types, generic `StreamBus`. | ✅ |
+| `eventbus-memory` | In-process `StreamBackend` behind the default-on `test-utils` feature. | ✅ |
+| `eventbus-redis` | Production `RedisBackend` over `XADD` / `XREADGROUP` / `XACK` / `XAUTOCLAIM`. | ✅ |
+| `eventbus-outbox` | Transactional outbox + dispatcher + dead-letter + idempotency traits. | 🛑 0.3.0 (awaiting reference impl) |
+| `eventbus-integration` | DDD integration-event helpers (`IntegrationEvent`, `MessageFactory`, `EventPublisher`). | 🛑 0.3.0 (awaiting reference impl) |
+| `eventbus-contract` | Facade — re-exports the published crates behind feature flags. | ✅ |
 
 ## Features (facade)
 
 - `memory` (default) — in-process backend for tests / dev.
 - `redis` — Redis Streams backend.
-- `outbox` — outbox + dispatcher helpers.
-- `integration` — DDD integration-event surface.
 - `tracing` — `tracing` instrumentation on hot paths.
+
+`outbox` and `integration` features are reserved for 0.3.0. The trait crates
+live in this workspace today but are not yet published to crates.io because
+they have no reference implementation. Once a concrete impl ships
+(e.g. `eventbus-postgres-outbox`), the trait crates and their facade
+features will land together.
 
 ## Quickstart
 

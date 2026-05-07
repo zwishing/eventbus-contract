@@ -11,7 +11,7 @@ This is the **facade crate**. It re-exports the contract traits from [`eventbus-
 
 ```toml
 [dependencies]
-eventbus-contract = { version = "0.2", features = ["redis", "outbox"] }
+eventbus-contract = { version = "0.2", features = ["redis"] }
 ```
 
 ```rust
@@ -54,20 +54,23 @@ async fn main() -> Result<(), EventBusError> {
 |---|---|---|
 | `memory` | yes | `eventbus-memory` (in-process backend) |
 | `redis` | no | `eventbus-redis` (Redis Streams) |
-| `outbox` | no | `eventbus-outbox` (transactional outbox + dispatcher) |
-| `integration` | no | `eventbus-integration` (DDD integration events) |
 | `tracing` | no | `tracing` instrumentation on hot paths |
+
+`outbox` and `integration` features are reserved for 0.3.0 — those trait
+crates live in the workspace today but are not yet published to crates.io
+because there is no reference implementation. They will return as features
+alongside a concrete impl crate (e.g. `eventbus-postgres-outbox`).
 
 ## Workspace
 
-| Crate | Purpose |
-|---|---|
-| [`eventbus-core`](https://crates.io/crates/eventbus-core) | Contract traits + value types + generic `StreamBus` |
-| [`eventbus-memory`](https://crates.io/crates/eventbus-memory) | In-process `StreamBackend` |
-| [`eventbus-redis`](https://crates.io/crates/eventbus-redis) | Redis Streams `StreamBackend` + `JsonCodec` |
-| [`eventbus-outbox`](https://crates.io/crates/eventbus-outbox) | Outbox + dispatcher traits |
-| [`eventbus-integration`](https://crates.io/crates/eventbus-integration) | DDD integration-event surface |
-| `eventbus-contract` (this crate) | Facade re-exporting all of the above |
+| Crate | Purpose | Published in 0.2.0 |
+|---|---|:---:|
+| [`eventbus-core`](https://crates.io/crates/eventbus-core) | Contract traits + value types + generic `StreamBus` | ✅ |
+| [`eventbus-memory`](https://crates.io/crates/eventbus-memory) | In-process `StreamBackend` | ✅ |
+| [`eventbus-redis`](https://crates.io/crates/eventbus-redis) | Redis Streams `StreamBackend` + `JsonCodec` | ✅ |
+| `eventbus-outbox` | Outbox + dispatcher traits | 🛑 0.3.0 (awaiting reference impl) |
+| `eventbus-integration` | DDD integration-event surface | 🛑 0.3.0 (awaiting reference impl) |
+| `eventbus-contract` (this crate) | Facade re-exporting the published crates | ✅ |
 
 ## Migrating from 0.1
 

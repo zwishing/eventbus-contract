@@ -8,8 +8,11 @@ Breaking refactor. See [`MIGRATION-0.2.md`](./MIGRATION-0.2.md).
 
 - Workspace split: `eventbus-core` + `eventbus-memory` + `eventbus-redis`
   + `eventbus-outbox` + `eventbus-integration` + `eventbus-contract` (facade).
-- Single-crate users should depend on `eventbus-contract` and pick backends via
-  feature flags (`memory`, `redis`, `outbox`, `integration`, `tracing`).
+- Single-crate users should depend on `eventbus-contract` and pick backends
+  via feature flags: `memory` (default), `redis`, `tracing`.
+- `eventbus-outbox` and `eventbus-integration` are workspace-only in 0.2.0;
+  they will be published to crates.io in 0.3.0 alongside a reference
+  implementation crate (e.g. `eventbus-postgres-outbox`).
 
 ### Public API — breaking
 

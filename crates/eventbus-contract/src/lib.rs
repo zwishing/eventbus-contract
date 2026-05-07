@@ -1,5 +1,5 @@
 //! `eventbus-contract` — facade crate that re-exports the contract traits,
-//! value types, backends, and helpers behind feature flags.
+//! value types, and backends behind feature flags.
 //!
 //! Use [`prelude`] for the common imports, then pick a backend via features:
 //!
@@ -7,15 +7,16 @@
 //!   tests, examples, and local development.
 //! - `redis`: production [`RedisBackend`](redis) over Redis Streams /
 //!   consumer groups (requires the `redis` server).
-//! - `outbox`: transactional [`OutboxStore`](outbox) + dispatcher relay.
-//! - `integration`: DDD [`IntegrationEvent`](integration) helpers.
 //! - `tracing`: enables `tracing` instrumentation on hot paths.
+//!
+//! `outbox` and `integration` features are reserved for 0.3.0 — those trait
+//! crates are workspace-only in 0.2.0 (no reference implementation yet).
 //!
 //! Recommended setup:
 //!
 //! ```toml
 //! [dependencies]
-//! eventbus-contract = { version = "0.2", features = ["redis", "outbox"] }
+//! eventbus-contract = { version = "0.2", features = ["redis"] }
 //! ```
 //!
 //! See [`MIGRATION-0.2.md`](https://github.com/zwishing/eventbus-contract/blob/main/MIGRATION-0.2.md)
@@ -28,12 +29,6 @@ pub use eventbus_memory as memory;
 
 #[cfg(feature = "redis")]
 pub use eventbus_redis as redis;
-
-#[cfg(feature = "outbox")]
-pub use eventbus_outbox as outbox;
-
-#[cfg(feature = "integration")]
-pub use eventbus_integration as integration;
 
 pub mod prelude {
     //! Common imports for users of the event bus.
