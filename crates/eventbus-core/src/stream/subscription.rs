@@ -68,11 +68,16 @@ impl StreamSubscription {
 
 impl Subscription for StreamSubscription {
     fn name(&self) -> &str {
-        self.name()
+        StreamSubscription::name(self)
     }
 
-    async fn close(&self) -> Result<(), EventBusError> {
-        StreamSubscription::close(self).await
+    fn close(self: std::sync::Arc<Self>) -> crate::BoxFuture<'static, Result<(), EventBusError>> {
+        Box::pin(async move {
+            // Deref the Arc to call the inherent &self method, which already
+            // handles the close handshake (begin_shutdown -> JoinHandle::await).
+            // The Arc keeps the subscription alive until close completes.
+            (*self).close().await
+        })
     }
 }
 

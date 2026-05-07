@@ -38,33 +38,35 @@ struct RetryingHandler {
 }
 
 impl Handler for RetryingHandler {
-    async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
-        let state = delivery.state().await?;
+    fn handle<'a>(
+        &'a self,
+        delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            let state = delivery.state().await?;
 
-        println!(
-            "[handler] attempt={} (delivery state attempt={})",
-            attempt, state.attempt
-        );
+            println!(
+                "[handler] attempt={} (delivery state attempt={})",
+                attempt, state.attempt
+            );
 
-        if attempt == 1 {
-            // Transient failure — ask the bus to republish for redelivery.
-            delivery
-                .retry(&std::io::Error::other("temporary downstream error"))
-                .await?;
-            println!("[handler] → retried");
-        } else {
-            delivery.ack().await?;
-            println!("[handler] → acked on attempt {attempt}");
-        }
+            if attempt == 1 {
+                // Transient failure — ask the bus to republish for redelivery.
+                delivery
+                    .retry(&std::io::Error::other("temporary downstream error"))
+                    .await?;
+                println!("[handler] → retried");
+            } else {
+                delivery.ack().await?;
+                println!("[handler] → acked on attempt {attempt}");
+            }
 
-        self.tx
-            .send(attempt)
-            .await
-            .map_err(|e| EventBusError::Internal(e.to_string()))
+            self.tx
+                .send(attempt)
+                .await
+                .map_err(|e| EventBusError::Internal(e.to_string()))
+        })
     }
 }
 
@@ -77,18 +79,20 @@ struct AlwaysFailHandler {
 }
 
 impl Handler for AlwaysFailHandler {
-    async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        println!("[dlq-handler] message is poison — routing to dead letter");
-        delivery
-            .nack(&std::io::Error::other("unrecoverable parse error"))
-            .await?;
-        self.tx
-            .send(())
-            .await
-            .map_err(|e| EventBusError::Internal(e.to_string()))
+    fn handle<'a>(
+        &'a self,
+        delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            println!("[dlq-handler] message is poison — routing to dead letter");
+            delivery
+                .nack(&std::io::Error::other("unrecoverable parse error"))
+                .await?;
+            self.tx
+                .send(())
+                .await
+                .map_err(|e| EventBusError::Internal(e.to_string()))
+        })
     }
 }
 

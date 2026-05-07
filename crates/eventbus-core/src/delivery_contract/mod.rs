@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::future::Future;
 
 use crate::error::EventBusError;
 
@@ -55,7 +54,7 @@ pub struct DeliveryState {
 }
 
 pub trait DeliveryInspector: Send + Sync {
-    fn state(&self) -> impl Future<Output = Result<DeliveryState, EventBusError>> + Send;
+    fn state(&self) -> crate::BoxFuture<'_, Result<DeliveryState, EventBusError>>;
 }
 
 #[cfg(test)]

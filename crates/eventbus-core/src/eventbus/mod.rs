@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::contract::{
@@ -320,26 +320,27 @@ impl SubscriptionConfig {
 
 pub trait Delivery: DeliveryInspector + Send + Sync {
     fn message(&self) -> &Message;
-    fn ack(&self) -> impl Future<Output = Result<(), EventBusError>> + Send;
+    fn ack(&self) -> crate::BoxFuture<'_, Result<(), EventBusError>>;
     fn nack(
         &self,
         reason: &(dyn std::error::Error + Send + Sync),
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
+    ) -> crate::BoxFuture<'_, Result<(), EventBusError>>;
     fn retry(
         &self,
         reason: &(dyn std::error::Error + Send + Sync),
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
+    ) -> crate::BoxFuture<'_, Result<(), EventBusError>>;
 }
 
 pub trait Handler: Send + Sync {
-    fn handle<D>(&self, delivery: &D) -> impl Future<Output = Result<(), EventBusError>> + Send
-    where
-        D: Delivery + Send + Sync;
+    fn handle<'a>(
+        &'a self,
+        delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> crate::BoxFuture<'a, Result<(), EventBusError>>;
 }
 
 pub trait Subscription: Send + Sync {
     fn name(&self) -> &str;
-    async fn close(&self) -> Result<(), EventBusError>;
+    fn close(self: Arc<Self>) -> crate::BoxFuture<'static, Result<(), EventBusError>>;
 }
 
 /// Stream / queue identifier for a published message. PR 4 will harden this
@@ -419,16 +420,29 @@ pub trait PublisherExt: Publisher {
 impl<P: Publisher + ?Sized> PublisherExt for P {}
 
 pub trait Subscriber: Send + Sync {
-    type Sub: Subscription;
+    fn subscribe(
+        &self,
+        cfg: SubscriptionConfig,
+        handler: Arc<dyn Handler>,
+    ) -> crate::BoxFuture<'_, Result<Arc<dyn Subscription>, EventBusError>>;
+}
 
-    async fn subscribe<H>(
+/// Convenience layer over [`Subscriber`]. Generic methods that monomorphize
+/// for callers who don't need dynamic dispatch.
+pub trait SubscriberExt: Subscriber {
+    fn subscribe_with<H>(
         &self,
         cfg: SubscriptionConfig,
         handler: H,
-    ) -> Result<Self::Sub, EventBusError>
+    ) -> crate::BoxFuture<'_, Result<Arc<dyn Subscription>, EventBusError>>
     where
-        H: Handler + Send + Sync + 'static;
+        H: Handler + 'static,
+    {
+        self.subscribe(cfg, Arc::new(handler))
+    }
 }
+
+impl<S: Subscriber + ?Sized> SubscriberExt for S {}
 
 pub trait Bus: Publisher + Subscriber + Send + Sync {}
 

@@ -31,19 +31,21 @@ struct PrintHandler {
 }
 
 impl Handler for PrintHandler {
-    async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        let msg = delivery.message();
-        println!(
-            "[handler] received topic={} uid={} kind={}",
-            msg.topic, msg.uid, msg.kind
-        );
-        self.tx
-            .send(msg.clone())
-            .await
-            .map_err(|e| EventBusError::Internal(e.to_string()))
+    fn handle<'a>(
+        &'a self,
+        delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            let msg = delivery.message();
+            println!(
+                "[handler] received topic={} uid={} kind={}",
+                msg.topic, msg.uid, msg.kind
+            );
+            self.tx
+                .send(msg.clone())
+                .await
+                .map_err(|e| EventBusError::Internal(e.to_string()))
+        })
     }
 }
 

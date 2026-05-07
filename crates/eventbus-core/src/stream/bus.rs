@@ -37,14 +37,14 @@ type DeliveryTaskResult = Result<(), EventBusError>;
 /// [`OwnedSemaphorePermit`] from `limiter`, for the full handler + ack
 /// round-trip. The permit drops with the `Delivery`, so every termination
 /// path (success, panic, cancel, orphan) returns the slot automatically.
-struct RuntimeState<H> {
-    handler: Arc<H>,
+struct RuntimeState {
+    handler: Arc<dyn Handler>,
     config: Arc<SubscriptionConfig>,
     limiter: Arc<Semaphore>,
     ack_tx: mpsc::Sender<AckRequest>,
 }
 
-impl<H> Clone for RuntimeState<H> {
+impl Clone for RuntimeState {
     fn clone(&self) -> Self {
         Self {
             handler: Arc::clone(&self.handler),
@@ -281,15 +281,18 @@ impl<B: StreamBackend> StreamBus<B> {
         <Self as Publisher>::publish_batch(self, msgs, opts).await
     }
 
+    /// Convenience: subscribe with a concrete handler value, returning a
+    /// concrete [`StreamSubscription`] (not the trait object). For dyn
+    /// dispatch use the [`Subscriber`] trait directly.
     pub async fn subscribe<H>(
         &self,
         cfg: SubscriptionConfig,
         handler: H,
     ) -> Result<StreamSubscription, EventBusError>
     where
-        H: Handler + Send + Sync + 'static,
+        H: Handler + 'static,
     {
-        <Self as Subscriber>::subscribe(self, cfg, handler).await
+        self.subscribe_inner(cfg, Arc::new(handler)).await
     }
 
     async fn publish_inner(
@@ -409,17 +412,14 @@ impl<B: StreamBackend> StreamBus<B> {
         Ok(message)
     }
 
-    async fn consume_loop<H>(
+    async fn consume_loop(
         self,
         mut close_rx: watch::Receiver<bool>,
-        runtime: RuntimeState<H>,
+        runtime: RuntimeState,
         mut reclaim_rx: mpsc::Receiver<Vec<FetchedEntry>>,
         flusher_handle: JoinHandle<()>,
         reclaim_handle: JoinHandle<()>,
-    ) -> Result<(), EventBusError>
-    where
-        H: Handler + Send + Sync + 'static,
-    {
+    ) -> Result<(), EventBusError> {
         let mut tasks = JoinSet::new();
         let mut first_delivery_error: Option<EventBusError> = None;
         let mut backoff = BackoffState::new(runtime.config.retry_backoff);
@@ -545,15 +545,12 @@ impl<B: StreamBackend> StreamBus<B> {
         Ok(())
     }
 
-    async fn spawn_messages<H>(
+    async fn spawn_messages(
         &self,
         tasks: &mut JoinSet<DeliveryTaskResult>,
         entries: Vec<FetchedEntry>,
-        runtime: &RuntimeState<H>,
-    ) -> Result<(), EventBusError>
-    where
-        H: Handler + Send + Sync + 'static,
-    {
+        runtime: &RuntimeState,
+    ) -> Result<(), EventBusError> {
         // The caller (`consume_loop` / `reclaim_rx`) sized this batch against
         // a snapshot of `available_permits()`, and nothing else acquires from
         // this limiter — so `try_acquire_owned` should always succeed. We use
@@ -643,17 +640,14 @@ impl<B: StreamBackend> StreamBus<B> {
         }
     }
 
-    async fn process_single_message<H>(
+    async fn process_single_message(
         &self,
         config: Arc<SubscriptionConfig>,
-        handler: Arc<H>,
+        handler: Arc<dyn Handler>,
         claimed: ClaimedMessage,
         permit: OwnedSemaphorePermit,
         ack_tx: mpsc::Sender<AckRequest>,
-    ) -> Result<(), EventBusError>
-    where
-        H: Handler + Send + Sync + 'static,
-    {
+    ) -> Result<(), EventBusError> {
         // `max_retry` is the number of *retries*; the initial delivery
         // doesn't count, so the attempt budget is `max_retry + 1`. With
         // `max_retry = 0`, the first failure goes straight to DLQ.
@@ -727,17 +721,12 @@ impl<B: StreamBackend> Publisher for StreamBus<B> {
     }
 }
 
-impl<B: StreamBackend> Subscriber for StreamBus<B> {
-    type Sub = StreamSubscription;
-
-    async fn subscribe<H>(
+impl<B: StreamBackend> StreamBus<B> {
+    async fn subscribe_inner(
         &self,
         mut cfg: SubscriptionConfig,
-        handler: H,
-    ) -> Result<Self::Sub, EventBusError>
-    where
-        H: Handler + Send + Sync + 'static,
-    {
+        handler: Arc<dyn Handler>,
+    ) -> Result<StreamSubscription, EventBusError> {
         validate_topic(&cfg.topic)?;
         if cfg.consumer_group.trim().is_empty() {
             return Err(EventBusError::Validation(
@@ -813,7 +802,7 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
         });
 
         let runtime = RuntimeState {
-            handler: Arc::new(handler),
+            handler,
             config: Arc::new(cfg),
             limiter,
             ack_tx,
@@ -837,6 +826,19 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
         drop(runtime);
 
         Ok(StreamSubscription::new(consumer_name, close_tx, task))
+    }
+}
+
+impl<B: StreamBackend> Subscriber for StreamBus<B> {
+    fn subscribe(
+        &self,
+        cfg: SubscriptionConfig,
+        handler: Arc<dyn Handler>,
+    ) -> crate::BoxFuture<'_, Result<Arc<dyn crate::Subscription>, EventBusError>> {
+        Box::pin(async move {
+            let sub = self.subscribe_inner(cfg, handler).await?;
+            Ok(Arc::new(sub) as Arc<dyn crate::Subscription>)
+        })
     }
 }
 

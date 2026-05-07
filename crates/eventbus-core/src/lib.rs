@@ -31,7 +31,7 @@ pub use dispatcher::{Config, Dispatcher, DispatcherConfig, Listener, Notificatio
 pub use error::EventBusError;
 pub use eventbus::{
     BatchOutcome, Bus, Codec, Delivery, Handler, Headers, Message, MessageId, PublishOptions,
-    Publisher, PublisherExt, Subscriber, Subscription, SubscriptionConfig, Topic,
+    Publisher, PublisherExt, Subscriber, SubscriberExt, Subscription, SubscriptionConfig, Topic,
 };
 pub use idempotency::{IdempotencyClaim, IdempotencyClaimStore, IdempotencyStore};
 pub use integration::{EventPublisher, IntegrationEvent, MessageFactory};

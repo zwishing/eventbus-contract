@@ -100,8 +100,8 @@ impl<B: StreamBackend> StreamDelivery<B> {
 }
 
 impl<B: StreamBackend> DeliveryInspector for StreamDelivery<B> {
-    async fn state(&self) -> Result<DeliveryState, EventBusError> {
-        Ok(self.state.clone())
+    fn state(&self) -> crate::BoxFuture<'_, Result<DeliveryState, EventBusError>> {
+        Box::pin(async move { Ok(self.state.clone()) })
     }
 }
 
@@ -110,86 +110,97 @@ impl<B: StreamBackend> Delivery for StreamDelivery<B> {
         &self.message
     }
 
-    async fn ack(&self) -> Result<(), EventBusError> {
-        if !self.begin_finalize() {
-            return Ok(());
-        }
-
-        if let Err(err) = self.mark_acked().await {
-            self.reset_finalize();
-            return Err(err);
-        }
-
-        Ok(())
-    }
-
-    async fn nack(
-        &self,
-        reason: &(dyn std::error::Error + Send + Sync),
-    ) -> Result<(), EventBusError> {
-        if !self.begin_finalize() {
-            return Ok(());
-        }
-
-        if let Err(err) = self.publish_dead_letter(&reason.to_string()).await {
-            self.reset_finalize();
-            return Err(err);
-        }
-
-        if let Err(err) = self.mark_acked().await {
-            self.reset_finalize();
-            return Err(err);
-        }
-
-        Ok(())
-    }
-
-    async fn retry(
-        &self,
-        reason: &(dyn std::error::Error + Send + Sync),
-    ) -> Result<(), EventBusError> {
-        if !self.begin_finalize() {
-            return Ok(());
-        }
-
-        let retry_exhausted = self.state.attempt >= self.state.max_attempt;
-
-        if retry_exhausted {
-            // Without a dead-letter topic the message would be silently acked
-            // and lost. Surface the contract violation to the handler so it
-            // can decide between dropping or stashing the payload elsewhere.
-            if self.config.dead_letter_topic.is_none() {
-                self.reset_finalize();
-                return Err(EventBusError::Validation(format!(
-                    "retry exhausted ({}/{}) but no dead_letter_topic configured for topic {}",
-                    self.state.attempt, self.state.max_attempt, self.config.topic,
-                )));
+    fn ack(&self) -> crate::BoxFuture<'_, Result<(), EventBusError>> {
+        Box::pin(async move {
+            if !self.begin_finalize() {
+                return Ok(());
             }
-            if let Err(err) = self.publish_dead_letter(&reason.to_string()).await {
+
+            if let Err(err) = self.mark_acked().await {
                 self.reset_finalize();
                 return Err(err);
             }
-        } else {
-            let mut retried = Message::clone(&self.message);
-            retried.headers.insert(
-                HEADER_RETRY_ATTEMPT.to_string(),
-                self.state.attempt.to_string(),
-            );
-            retried
-                .headers
-                .insert(HEADER_RETRY_REASON.to_string(), reason.to_string());
 
-            if let Err(err) = self.backend.publish(&self.config.topic, retried).await {
+            Ok(())
+        })
+    }
+
+    fn nack(
+        &self,
+        reason: &(dyn std::error::Error + Send + Sync),
+    ) -> crate::BoxFuture<'_, Result<(), EventBusError>> {
+        // Snapshot the reason synchronously so the BoxFuture doesn't need to
+        // outlive the borrow of `reason`.
+        let reason_str = reason.to_string();
+        Box::pin(async move {
+            if !self.begin_finalize() {
+                return Ok(());
+            }
+
+            if let Err(err) = self.publish_dead_letter(&reason_str).await {
                 self.reset_finalize();
                 return Err(err);
             }
-        }
 
-        if let Err(err) = self.mark_acked().await {
-            self.reset_finalize();
-            return Err(err);
-        }
+            if let Err(err) = self.mark_acked().await {
+                self.reset_finalize();
+                return Err(err);
+            }
 
-        Ok(())
+            Ok(())
+        })
+    }
+
+    fn retry(
+        &self,
+        reason: &(dyn std::error::Error + Send + Sync),
+    ) -> crate::BoxFuture<'_, Result<(), EventBusError>> {
+        let reason_str = reason.to_string();
+        Box::pin(async move {
+            if !self.begin_finalize() {
+                return Ok(());
+            }
+
+            let retry_exhausted = self.state.attempt >= self.state.max_attempt;
+
+            if retry_exhausted {
+                // Without a dead-letter topic the message would be silently
+                // acked and lost. Surface the contract violation to the
+                // handler so it can decide between dropping or stashing the
+                // payload elsewhere.
+                if self.config.dead_letter_topic.is_none() {
+                    self.reset_finalize();
+                    return Err(EventBusError::Validation(format!(
+                        "retry exhausted ({}/{}) but no dead_letter_topic configured for topic {}",
+                        self.state.attempt, self.state.max_attempt, self.config.topic,
+                    )));
+                }
+                if let Err(err) = self.publish_dead_letter(&reason_str).await {
+                    self.reset_finalize();
+                    return Err(err);
+                }
+            } else {
+                let mut retried = Message::clone(&self.message);
+                retried.headers.insert(
+                    HEADER_RETRY_ATTEMPT.to_string(),
+                    self.state.attempt.to_string(),
+                );
+                retried
+                    .headers
+                    .insert(HEADER_RETRY_REASON.to_string(), reason_str.clone());
+
+                if let Err(err) = self.backend.publish(&self.config.topic, retried).await {
+                    self.reset_finalize();
+                    return Err(err);
+                }
+            }
+
+            if let Err(err) = self.mark_acked().await {
+                self.reset_finalize();
+                return Err(err);
+            }
+
+            Ok(())
+        })
     }
 }

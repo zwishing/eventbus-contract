@@ -37,18 +37,20 @@ struct WorkerHandler {
 }
 
 impl Handler for WorkerHandler {
-    async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        let uid = delivery.message().uid.clone();
-        self.processed.fetch_add(1, Ordering::SeqCst);
-        println!("[worker-{}] handling uid={uid}", self.worker_id);
-        delivery.ack().await?;
-        self.tx
-            .send((self.worker_id, uid))
-            .await
-            .map_err(|e| EventBusError::Internal(e.to_string()))
+    fn handle<'a>(
+        &'a self,
+        delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            let uid = delivery.message().uid.clone();
+            self.processed.fetch_add(1, Ordering::SeqCst);
+            println!("[worker-{}] handling uid={uid}", self.worker_id);
+            delivery.ack().await?;
+            self.tx
+                .send((self.worker_id, uid))
+                .await
+                .map_err(|e| EventBusError::Internal(e.to_string()))
+        })
     }
 }
 

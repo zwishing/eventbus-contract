@@ -41,14 +41,16 @@ struct AutoAckHandler {
 }
 
 impl Handler for AutoAckHandler {
-    async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        self.tx
-            .send(delivery.message().clone())
-            .await
-            .map_err(|err| EventBusError::Internal(err.to_string()))
+    fn handle<'a>(
+        &'a self,
+        delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            self.tx
+                .send(delivery.message().clone())
+                .await
+                .map_err(|err| EventBusError::Internal(err.to_string()))
+        })
     }
 }
 
@@ -57,15 +59,17 @@ struct ManualAckHandler {
 }
 
 impl Handler for ManualAckHandler {
-    async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        delivery.ack().await?;
-        self.tx
-            .send(())
-            .await
-            .map_err(|err| EventBusError::Internal(err.to_string()))
+    fn handle<'a>(
+        &'a self,
+        delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            delivery.ack().await?;
+            self.tx
+                .send(())
+                .await
+                .map_err(|err| EventBusError::Internal(err.to_string()))
+        })
     }
 }
 
@@ -75,23 +79,25 @@ struct RetryOnceHandler {
 }
 
 impl Handler for RetryOnceHandler {
-    async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
-        if attempt == 1 {
-            delivery
-                .retry(&std::io::Error::other("retry-later"))
-                .await?;
-        } else {
-            delivery.ack().await?;
-        }
+    fn handle<'a>(
+        &'a self,
+        delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt == 1 {
+                delivery
+                    .retry(&std::io::Error::other("retry-later"))
+                    .await?;
+            } else {
+                delivery.ack().await?;
+            }
 
-        self.tx
-            .send(attempt)
-            .await
-            .map_err(|err| EventBusError::Internal(err.to_string()))
+            self.tx
+                .send(attempt)
+                .await
+                .map_err(|err| EventBusError::Internal(err.to_string()))
+        })
     }
 }
 
@@ -100,14 +106,16 @@ struct ReceiveOnlyHandler {
 }
 
 impl Handler for ReceiveOnlyHandler {
-    async fn handle<D>(&self, _delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        self.tx
-            .send(())
-            .await
-            .map_err(|err| EventBusError::Internal(err.to_string()))
+    fn handle<'a>(
+        &'a self,
+        _delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            self.tx
+                .send(())
+                .await
+                .map_err(|err| EventBusError::Internal(err.to_string()))
+        })
     }
 }
 
@@ -116,15 +124,17 @@ struct AckAndSignalHandler {
 }
 
 impl Handler for AckAndSignalHandler {
-    async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        delivery.ack().await?;
-        self.tx
-            .send(())
-            .await
-            .map_err(|err| EventBusError::Internal(err.to_string()))
+    fn handle<'a>(
+        &'a self,
+        delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            delivery.ack().await?;
+            self.tx
+                .send(())
+                .await
+                .map_err(|err| EventBusError::Internal(err.to_string()))
+        })
     }
 }
 
@@ -133,17 +143,19 @@ struct NackHandler {
 }
 
 impl Handler for NackHandler {
-    async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        delivery
-            .nack(&std::io::Error::other("poison-message"))
-            .await?;
-        self.tx
-            .send(())
-            .await
-            .map_err(|err| EventBusError::Internal(err.to_string()))
+    fn handle<'a>(
+        &'a self,
+        delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            delivery
+                .nack(&std::io::Error::other("poison-message"))
+                .await?;
+            self.tx
+                .send(())
+                .await
+                .map_err(|err| EventBusError::Internal(err.to_string()))
+        })
     }
 }
 
@@ -152,12 +164,14 @@ struct ErrorHandler {
 }
 
 impl Handler for ErrorHandler {
-    async fn handle<D>(&self, _delivery: &D) -> Result<(), EventBusError>
-    where
-        D: Delivery + Send + Sync,
-    {
-        self.attempts.fetch_add(1, Ordering::SeqCst);
-        Err(EventBusError::Internal("handler failed".into()))
+    fn handle<'a>(
+        &'a self,
+        _delivery: &'a (dyn Delivery + Send + Sync),
+    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        Box::pin(async move {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err(EventBusError::Internal("handler failed".into()))
+        })
     }
 }
 
@@ -404,16 +418,18 @@ async fn retry_max_routes_to_dead_letter_stream() {
     }
 
     impl Handler for RetryToDeadLetterHandler {
-        async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-        where
-            D: Delivery + Send + Sync,
-        {
-            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
-            delivery
-                .retry(&std::io::Error::other("retry-limit"))
-                .await?;
-            self.result.lock().await.push(attempt);
-            Ok(())
+        fn handle<'a>(
+            &'a self,
+            delivery: &'a (dyn Delivery + Send + Sync),
+        ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+            Box::pin(async move {
+                let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                delivery
+                    .retry(&std::io::Error::other("retry-limit"))
+                    .await?;
+                self.result.lock().await.push(attempt);
+                Ok(())
+            })
         }
     }
 
@@ -603,20 +619,22 @@ async fn subscription_respects_max_in_flight_limit() {
     }
 
     impl Handler for BlockingHandler {
-        async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-        where
-            D: Delivery + Send + Sync,
-        {
-            self.started_tx
-                .send(delivery.message().uid.clone())
-                .await
-                .map_err(|err| EventBusError::Internal(err.to_string()))?;
-            let _permit = self
-                .release
-                .acquire()
-                .await
-                .map_err(|err| EventBusError::Internal(err.to_string()))?;
-            delivery.ack().await
+        fn handle<'a>(
+            &'a self,
+            delivery: &'a (dyn Delivery + Send + Sync),
+        ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+            Box::pin(async move {
+                self.started_tx
+                    .send(delivery.message().uid.clone())
+                    .await
+                    .map_err(|err| EventBusError::Internal(err.to_string()))?;
+                let _permit = self
+                    .release
+                    .acquire()
+                    .await
+                    .map_err(|err| EventBusError::Internal(err.to_string()))?;
+                delivery.ack().await
+            })
         }
     }
 
@@ -783,16 +801,18 @@ async fn reclaimed_messages_consume_in_flight_budget() {
     }
 
     impl Handler for BlockingHandler {
-        async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-        where
-            D: Delivery + Send + Sync,
-        {
-            self.started_tx
-                .send(delivery.message().uid.clone())
-                .await
-                .map_err(|err| EventBusError::Internal(err.to_string()))?;
-            self.release.notified().await;
-            delivery.ack().await
+        fn handle<'a>(
+            &'a self,
+            delivery: &'a (dyn Delivery + Send + Sync),
+        ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+            Box::pin(async move {
+                self.started_tx
+                    .send(delivery.message().uid.clone())
+                    .await
+                    .map_err(|err| EventBusError::Internal(err.to_string()))?;
+                self.release.notified().await;
+                delivery.ack().await
+            })
         }
     }
 
@@ -1317,18 +1337,20 @@ async fn retry_exhausted_without_dlq_returns_error() {
     }
 
     impl Handler for AlwaysRetryHandler {
-        async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-        where
-            D: Delivery + Send + Sync,
-        {
-            self.attempts.fetch_add(1, Ordering::SeqCst);
-            let res = delivery.retry(&std::io::Error::other("force-retry")).await;
-            if let Err(e) = res {
-                *self.last_err.lock().await = Some(e.to_string());
-                self.done.notify_one();
-                return Err(e);
-            }
-            Ok(())
+        fn handle<'a>(
+            &'a self,
+            delivery: &'a (dyn Delivery + Send + Sync),
+        ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+            Box::pin(async move {
+                self.attempts.fetch_add(1, Ordering::SeqCst);
+                let res = delivery.retry(&std::io::Error::other("force-retry")).await;
+                if let Err(e) = res {
+                    *self.last_err.lock().await = Some(e.to_string());
+                    self.done.notify_one();
+                    return Err(e);
+                }
+                Ok(())
+            })
         }
     }
 
@@ -1532,18 +1554,20 @@ async fn default_max_pending_acks_does_not_inflate_handler_concurrency() {
         started_tx: mpsc::Sender<()>,
     }
     impl Handler for H {
-        async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-        where
-            D: Delivery + Send + Sync,
-        {
-            let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-            let _ = self
-                .peak
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |p| Some(p.max(now)));
-            self.started_tx.send(()).await.ok();
-            self.release.notified().await;
-            self.in_flight.fetch_sub(1, Ordering::SeqCst);
-            delivery.ack().await
+        fn handle<'a>(
+            &'a self,
+            delivery: &'a (dyn Delivery + Send + Sync),
+        ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+            Box::pin(async move {
+                let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                let _ = self
+                    .peak
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |p| Some(p.max(now)));
+                self.started_tx.send(()).await.ok();
+                self.release.notified().await;
+                self.in_flight.fetch_sub(1, Ordering::SeqCst);
+                delivery.ack().await
+            })
         }
     }
 
