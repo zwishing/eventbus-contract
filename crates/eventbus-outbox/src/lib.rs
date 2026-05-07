@@ -12,10 +12,14 @@
 //!
 //! Enable via `eventbus-contract = { version = "0.2", features = ["outbox"] }`.
 
+pub mod consumer;
 pub mod dispatcher;
+pub mod idempotency;
 pub mod outbox;
 
+pub use consumer::ConsumerMessageRecord;
 pub use dispatcher::{Config, Dispatcher, DispatcherConfig, Listener, Notification, Notifier};
+pub use idempotency::{IdempotencyClaim, IdempotencyClaimStore, IdempotencyStore};
 pub use outbox::dead_letter::{DeadLetterDecision, DeadLetterPolicy, DeadLetterReason};
 pub use outbox::{
     AppendRequest, DeadLetterMessageRecord, DeadLetterStore, OutboxMessageRecord, OutboxRecord,

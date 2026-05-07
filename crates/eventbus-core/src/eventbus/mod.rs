@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::contract::delivery::DeliveryInspector;
 use crate::contract::{
     AckMode, BackpressurePolicy, ConsumerBalanceMode, DeliveryGuarantee, OrderingMode,
     OverflowStrategy, PublishConfirmation,
 };
-use crate::delivery_contract::DeliveryInspector;
 use crate::error::EventBusError;
 
 // ---------------------------------------------------------------------------

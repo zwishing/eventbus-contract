@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::error::EventBusError;
+use eventbus_core::EventBusError;
 
 // ---------------------------------------------------------------------------
 // Idempotency store (basic dedup check)
