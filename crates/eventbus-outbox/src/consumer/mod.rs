@@ -1,5 +1,5 @@
-use crate::eventbus::Topic;
 use chrono::{DateTime, Utc};
+use eventbus_core::Topic;
 
 #[derive(Debug, Clone)]
 pub struct ConsumerMessageRecord {

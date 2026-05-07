@@ -1,13 +1,15 @@
 use chrono::Utc;
 use eventbus_core::{
     AckMode, BackpressurePolicy, ConsumerBalanceMode, Delivery, DeliveryGuarantee,
-    DeliveryInspector, DeliveryOutcome, DeliveryState, GuaranteeMatrix, Headers, IdempotencyClaim,
-    IdempotencyClaimStore, Message, OrderingMode, OverflowStrategy, PublishConfirmation,
-    SchemaDescriptor, SubscriptionSemantics, Topic, TraceContext, HEADER_BAGGAGE,
-    HEADER_CONTENT_TYPE, HEADER_EVENT_VERSION, HEADER_IDEMPOTENCY_KEY, HEADER_TRACE_PARENT,
-    HEADER_TRACE_STATE,
+    DeliveryInspector, DeliveryOutcome, DeliveryState, GuaranteeMatrix, Headers, Message,
+    OrderingMode, OverflowStrategy, PublishConfirmation, SchemaDescriptor, SubscriptionSemantics,
+    Topic, TraceContext, HEADER_BAGGAGE, HEADER_CONTENT_TYPE, HEADER_EVENT_VERSION,
+    HEADER_IDEMPOTENCY_KEY, HEADER_TRACE_PARENT, HEADER_TRACE_STATE,
 };
-use eventbus_outbox::{DeadLetterDecision, DeadLetterPolicy, DeadLetterReason, DispatcherConfig};
+use eventbus_outbox::{
+    DeadLetterDecision, DeadLetterPolicy, DeadLetterReason, DispatcherConfig, IdempotencyClaim,
+    IdempotencyClaimStore,
+};
 
 #[test]
 fn root_exports_go_parity_contracts() {
