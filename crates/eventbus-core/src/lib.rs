@@ -1,4 +1,18 @@
 #![allow(async_fn_in_trait)]
+//! Object-safe event-bus contract: traits, value types, and the in-process
+//! Stream backend.
+//!
+//! - [`Publisher`] / [`Subscriber`] / [`Bus`] — dyn-safe core traits
+//! - [`PublisherExt`] / [`SubscriberExt`] — monomorphic convenience extensions
+//! - [`Handler`] receives `Box<dyn DeliveryHandle>`
+//! - [`Delivery`] (read) + [`DeliveryControl`] (consume `Box<Self>`) — the
+//!   compiler enforces finalize-at-most-once
+//! - [`stream::StreamBus`] over [`stream::StreamBackend`]; the in-process
+//!   [`stream::MemoryStreamBackend`] lives here today and is re-exported by
+//!   the sibling `eventbus-memory` crate behind its `test-utils` feature.
+//!
+//! See the [`eventbus`](https://docs.rs/eventbus) facade crate for ready-to-use
+//! backends behind feature flags.
 
 use std::{future::Future, pin::Pin};
 
