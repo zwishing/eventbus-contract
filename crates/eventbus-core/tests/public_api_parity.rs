@@ -11,7 +11,7 @@ use eventbus_core::{
 
 #[test]
 fn root_exports_go_parity_contracts() {
-    let _topic: Topic = "orders.created".to_string();
+    let _topic: Topic = Topic::new("orders.created").expect("topic");
     let _headers = Headers::default();
 
     let matrix = GuaranteeMatrix {
@@ -156,13 +156,18 @@ fn delivery_trait_exposes_delivery_inspection() {
     struct DeliveryWithInspection;
 
     impl DeliveryInspector for DeliveryWithInspection {
-        async fn state(&self) -> Result<DeliveryState, eventbus_core::EventBusError> {
-            Ok(DeliveryState {
-                attempt: 1,
-                max_attempt: 3,
-                first_received: Utc::now(),
-                last_received: Utc::now(),
-                redelivered: false,
+        fn state(
+            &self,
+        ) -> eventbus_core::BoxFuture<'_, Result<DeliveryState, eventbus_core::EventBusError>>
+        {
+            Box::pin(async move {
+                Ok(DeliveryState {
+                    attempt: 1,
+                    max_attempt: 3,
+                    first_received: Utc::now(),
+                    last_received: Utc::now(),
+                    redelivered: false,
+                })
             })
         }
     }
@@ -170,24 +175,6 @@ fn delivery_trait_exposes_delivery_inspection() {
     impl Delivery for DeliveryWithInspection {
         fn message(&self) -> &Message {
             panic!("test helper does not expose a message reference")
-        }
-
-        async fn ack(&self) -> Result<(), eventbus_core::EventBusError> {
-            Ok(())
-        }
-
-        async fn nack(
-            &self,
-            _reason: &(dyn std::error::Error + Send + Sync),
-        ) -> Result<(), eventbus_core::EventBusError> {
-            Ok(())
-        }
-
-        async fn retry(
-            &self,
-            _reason: &(dyn std::error::Error + Send + Sync),
-        ) -> Result<(), eventbus_core::EventBusError> {
-            Ok(())
         }
     }
 
@@ -201,7 +188,7 @@ fn assert_delivery_inspector<T: DeliveryInspector>() {}
 fn message_with_headers(headers: Headers) -> Message {
     Message {
         uid: "msg-1".into(),
-        topic: "orders.created".into(),
+        topic: eventbus_core::Topic::new("orders.created").expect("topic"),
         key: "order-1".into(),
         kind: "orders.created".into(),
         source: "tests".into(),

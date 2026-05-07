@@ -1,11 +1,12 @@
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Mutex,
+    Arc, Mutex,
 };
 
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use super::observer::{ErrorObserver, ErrorScope};
 use crate::{EventBusError, Subscription};
 
 #[must_use = "subscription is idle until bound; call `.close().await` for graceful shutdown"]
@@ -14,6 +15,7 @@ pub struct StreamSubscription {
     closed: AtomicBool,
     close_tx: watch::Sender<bool>,
     task: Mutex<Option<JoinHandle<Result<(), EventBusError>>>>,
+    observer: Option<Arc<dyn ErrorObserver>>,
 }
 
 impl StreamSubscription {
@@ -21,12 +23,14 @@ impl StreamSubscription {
         name: String,
         close_tx: watch::Sender<bool>,
         task: JoinHandle<Result<(), EventBusError>>,
+        observer: Option<Arc<dyn ErrorObserver>>,
     ) -> Self {
         Self {
             name,
             closed: AtomicBool::new(false),
             close_tx,
             task: Mutex::new(Some(task)),
+            observer,
         }
     }
 
@@ -62,17 +66,37 @@ impl StreamSubscription {
         };
 
         task.await
-            .map_err(|err| EventBusError::Internal(format!("subscription task failed: {err}")))?
+            .map_err(|err| EventBusError::source("subscription task failed", err))?
+    }
+
+    /// Abort the background task without waiting for graceful drain. Returns
+    /// `Ok(())` if the abort was acknowledged or the task was already done;
+    /// surfaces the task's last error if it had one.
+    pub async fn abort(&self) -> Result<(), EventBusError> {
+        let Some(task) = self.begin_shutdown()? else {
+            return Ok(());
+        };
+        task.abort();
+        match task.await {
+            Ok(r) => r,
+            Err(err) if err.is_cancelled() => Ok(()),
+            Err(err) => Err(EventBusError::source("subscription task aborted", err)),
+        }
     }
 }
 
 impl Subscription for StreamSubscription {
     fn name(&self) -> &str {
-        self.name()
+        StreamSubscription::name(self)
     }
 
-    async fn close(&self) -> Result<(), EventBusError> {
-        StreamSubscription::close(self).await
+    fn close(self: std::sync::Arc<Self>) -> crate::BoxFuture<'static, Result<(), EventBusError>> {
+        Box::pin(async move {
+            // Deref the Arc to call the inherent &self method, which already
+            // handles the close handshake (begin_shutdown -> JoinHandle::await).
+            // The Arc keeps the subscription alive until close completes.
+            (*self).close().await
+        })
     }
 }
 
@@ -81,6 +105,10 @@ impl Subscription for StreamSubscription {
 /// raised after the close signal are silently discarded**. To surface those
 /// errors, call [`StreamSubscription::close`] explicitly and await the
 /// returned `Result`.
+///
+/// When the subscription is dropped without `close()` having been called,
+/// the configured [`ErrorObserver`] (if any) is notified via
+/// [`ErrorScope::Drop`] so leaked subscriptions are observable.
 impl Drop for StreamSubscription {
     fn drop(&mut self) {
         if self.closed.swap(true, Ordering::AcqRel) {
@@ -88,6 +116,15 @@ impl Drop for StreamSubscription {
         }
 
         let _ = self.close_tx.send(true);
+        if let Some(obs) = self.observer.as_ref() {
+            obs.on_error(
+                ErrorScope::Drop,
+                &EventBusError::Internal(format!(
+                    "subscription `{}` dropped without close()",
+                    self.name
+                )),
+            );
+        }
         if let Ok(mut guard) = self.task.lock() {
             let _ = guard.take();
         }

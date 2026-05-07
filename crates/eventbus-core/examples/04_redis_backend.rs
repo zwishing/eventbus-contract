@@ -30,8 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use chrono::Utc;
     use eventbus_core::stream::{StreamBus, StreamBusOptions};
     use eventbus_core::{
-        AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions,
-        SubscriptionConfig,
+        AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
     };
     use tokio::sync::mpsc;
     use tokio::time::timeout;
@@ -45,20 +44,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     impl Handler for PrintHandler {
-        async fn handle<D>(&self, delivery: &D) -> Result<(), EventBusError>
-        where
-            D: Delivery + Send + Sync,
-        {
-            let msg = delivery.message();
-            println!(
-                "[handler] topic={} uid={} kind={}",
-                msg.topic, msg.uid, msg.kind
-            );
-            delivery.ack().await?;
-            self.tx
-                .send(msg.clone())
-                .await
-                .map_err(|e| EventBusError::Internal(e.to_string()))
+        fn handle(
+            &self,
+            delivery: Box<dyn DeliveryHandle>,
+        ) -> eventbus_core::BoxFuture<'_, Result<(), EventBusError>> {
+            Box::pin(async move {
+                let msg = delivery.message().clone();
+                println!(
+                    "[handler] topic={} uid={} kind={}",
+                    msg.topic, msg.uid, msg.kind
+                );
+                delivery.ack().await?;
+                self.tx
+                    .send(msg)
+                    .await
+                    .map_err(|e| EventBusError::Internal(e.to_string()))
+            })
         }
     }
 
@@ -83,16 +84,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = mpsc::channel(8);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "demo.events".to_string(),
-                consumer_group: "demo-consumers".to_string(),
-                consumer_name: "worker-1".to_string(),
-                ack_mode: AckMode::Manual,
-                max_retry: 3,
-                dead_letter_topic: Some("demo.events.dlq".to_string()),
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("demo.events").expect("topic"),
+                eventbus_core::ConsumerGroup::new("demo-consumers").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("worker-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_retry(3)
+            .dead_letter_topic(eventbus_core::Topic::new("demo.events.dlq").expect("dlq topic"))
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             PrintHandler { tx },
         )
         .await?;
@@ -105,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     bus.publish(
         Message {
             uid: uuid(),
-            topic: "demo.events".to_string(),
+            topic: eventbus_core::Topic::new("demo.events").expect("topic"),
             key: "entity-1".to_string(),
             kind: "DemoEvent".to_string(),
             source: "example".to_string(),

@@ -1,10 +1,25 @@
-//! Facade crate for the EventBus contract. Choose backends + helpers via features.
+//! `eventbus` — facade crate that re-exports the contract traits, value
+//! types, backends, and helpers behind feature flags.
 //!
-//! - `memory` (default): in-process backend (test/dev only)
-//! - `redis`: Redis Streams backend
-//! - `outbox`: transactional outbox + dispatcher
-//! - `integration`: DDD integration-event helpers
-//! - `tracing`: tracing instrumentation
+//! Use [`prelude`] for the common imports, then pick a backend via features:
+//!
+//! - `memory` (default): in-process [`MemoryStreamBackend`](memory) for
+//!   tests, examples, and local development.
+//! - `redis`: production [`RedisBackend`](redis) over Redis Streams /
+//!   consumer groups (requires the `redis` server).
+//! - `outbox`: transactional [`OutboxStore`](outbox) + dispatcher relay.
+//! - `integration`: DDD [`IntegrationEvent`](integration) helpers.
+//! - `tracing`: enables `tracing` instrumentation on hot paths.
+//!
+//! Recommended setup:
+//!
+//! ```toml
+//! [dependencies]
+//! eventbus = { version = "0.2", features = ["redis", "outbox"] }
+//! ```
+//!
+//! See [`MIGRATION-0.2.md`](https://github.com/zwishing/eventbus-contract/blob/main/MIGRATION-0.2.md)
+//! for upgrading from `eventbus-contract` 0.1.
 
 pub use eventbus_core as core;
 
@@ -23,7 +38,8 @@ pub use eventbus_integration as integration;
 pub mod prelude {
     //! Common imports for users of the event bus.
     pub use eventbus_core::{
-        Bus, Codec, Delivery, DeliveryGuarantee, EventBusError, Handler, Message, PublishOptions,
-        Publisher, Subscriber, Subscription, SubscriptionConfig, Topic,
+        Bus, Codec, ConsumerGroup, ConsumerName, Delivery, DeliveryGuarantee, EventBusError,
+        Handler, Message, PublishOptions, Publisher, Subscriber, Subscription, SubscriptionConfig,
+        SubscriptionConfigBuilder, Topic,
     };
 }

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::contract::{
@@ -15,8 +15,238 @@ use crate::error::EventBusError;
 // Core types
 // ---------------------------------------------------------------------------
 
-pub type Topic = String;
 pub type Headers = HashMap<String, String>;
+
+// ---------------------------------------------------------------------------
+// Newtypes
+// ---------------------------------------------------------------------------
+
+/// Stream / queue identifier. Validated via [`Topic::new`] at construction:
+/// non-empty, ≤ [`Topic::MAX_LEN`] bytes, no ASCII control characters.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct Topic(String);
+
+impl Topic {
+    /// Maximum allowed topic length (bytes).
+    pub const MAX_LEN: usize = 1024;
+
+    /// Construct a [`Topic`], validating it at the boundary.
+    pub fn new(s: impl Into<String>) -> Result<Self, EventBusError> {
+        let s = s.into();
+        if s.trim().is_empty() {
+            return Err(EventBusError::Validation("topic is required".into()));
+        }
+        if s.len() > Self::MAX_LEN {
+            return Err(EventBusError::Validation(format!(
+                "topic length {} exceeds limit of {}",
+                s.len(),
+                Self::MAX_LEN,
+            )));
+        }
+        if s.chars().any(|c| c.is_control()) {
+            return Err(EventBusError::Validation(
+                "topic must not contain control characters".into(),
+            ));
+        }
+        Ok(Self(s))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::ops::Deref for Topic {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Topic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for Topic {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for Topic {
+    type Error = EventBusError;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Topic::new(s)
+    }
+}
+
+impl TryFrom<String> for Topic {
+    type Error = EventBusError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Topic::new(s)
+    }
+}
+
+/// Consumer group name. Validated: non-empty, ≤ [`ConsumerGroup::MAX_LEN`] bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct ConsumerGroup(String);
+
+impl ConsumerGroup {
+    pub const MAX_LEN: usize = 256;
+
+    pub fn new(s: impl Into<String>) -> Result<Self, EventBusError> {
+        let s = s.into();
+        if s.trim().is_empty() {
+            return Err(EventBusError::Validation(
+                "consumer group is required".into(),
+            ));
+        }
+        if s.len() > Self::MAX_LEN {
+            return Err(EventBusError::Validation(format!(
+                "consumer group length {} exceeds limit of {}",
+                s.len(),
+                Self::MAX_LEN,
+            )));
+        }
+        Ok(Self(s))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::ops::Deref for ConsumerGroup {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ConsumerGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for ConsumerGroup {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for ConsumerGroup {
+    type Error = EventBusError;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Self::new(s)
+    }
+}
+
+impl TryFrom<String> for ConsumerGroup {
+    type Error = EventBusError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::new(s)
+    }
+}
+
+/// Per-process consumer name. Validated: non-empty, ≤ [`ConsumerName::MAX_LEN`].
+/// Use [`ConsumerName::auto`] to obtain a unique auto-generated name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct ConsumerName(String);
+
+impl ConsumerName {
+    pub const MAX_LEN: usize = 256;
+
+    pub fn new(s: impl Into<String>) -> Result<Self, EventBusError> {
+        let s = s.into();
+        if s.trim().is_empty() {
+            return Err(EventBusError::Validation(
+                "consumer name is required".into(),
+            ));
+        }
+        if s.len() > Self::MAX_LEN {
+            return Err(EventBusError::Validation(format!(
+                "consumer name length {} exceeds limit of {}",
+                s.len(),
+                Self::MAX_LEN,
+            )));
+        }
+        Ok(Self(s))
+    }
+
+    /// Auto-generate a unique consumer name of the form
+    /// `consumer-<nanos>-<entropy>`. Bypasses validation since the format is
+    /// known-good.
+    #[must_use]
+    pub fn auto() -> Self {
+        let nanos = chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default();
+        let entropy: u64 = rand::Rng::gen(&mut rand::thread_rng());
+        Self(format!("consumer-{nanos}-{entropy:016x}"))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::ops::Deref for ConsumerName {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ConsumerName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for ConsumerName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<&str> for ConsumerName {
+    type Error = EventBusError;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Self::new(s)
+    }
+}
+
+impl TryFrom<String> for ConsumerName {
+    type Error = EventBusError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::new(s)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Message
@@ -183,41 +413,171 @@ impl PublishOptions {
 /// 4. If `backpressure` was unset, one is synthesized from the resolved
 ///    `max_in_flight` / `max_pending_acks`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SubscriptionConfig {
-    pub topic: Topic,
-    pub consumer_group: String,
-    pub consumer_name: String,
-    pub max_retry: usize,
-    pub retry_backoff: Duration,
-    pub dead_letter_topic: Option<Topic>,
-    pub ack_mode: AckMode,
-    pub ordering_mode: Option<OrderingMode>,
-    pub balance_mode: Option<ConsumerBalanceMode>,
-    pub guarantee: Option<DeliveryGuarantee>,
-    pub max_in_flight: usize,
-    pub max_pending_acks: usize,
-    pub wildcard_topic: bool,
-    pub backpressure: Option<BackpressurePolicy>,
+    pub(crate) topic: Topic,
+    pub(crate) consumer_group: ConsumerGroup,
+    pub(crate) consumer_name: ConsumerName,
+    pub(crate) max_retry: usize,
+    pub(crate) retry_backoff: Duration,
+    pub(crate) dead_letter_topic: Option<Topic>,
+    pub(crate) ack_mode: AckMode,
+    pub(crate) ordering_mode: Option<OrderingMode>,
+    pub(crate) balance_mode: Option<ConsumerBalanceMode>,
+    pub(crate) guarantee: Option<DeliveryGuarantee>,
+    pub(crate) max_in_flight: usize,
+    pub(crate) max_pending_acks: usize,
+    pub(crate) wildcard_topic: bool,
+    pub(crate) backpressure: Option<BackpressurePolicy>,
 }
 
-impl Default for SubscriptionConfig {
-    fn default() -> Self {
+impl SubscriptionConfig {
+    /// Begin building a [`SubscriptionConfig`] for the given topic + group.
+    pub fn builder(topic: Topic, consumer_group: ConsumerGroup) -> SubscriptionConfigBuilder {
+        SubscriptionConfigBuilder::new(topic, consumer_group)
+    }
+
+    #[must_use]
+    pub fn topic(&self) -> &Topic {
+        &self.topic
+    }
+    #[must_use]
+    pub fn consumer_group(&self) -> &ConsumerGroup {
+        &self.consumer_group
+    }
+    #[must_use]
+    pub fn consumer_name(&self) -> &ConsumerName {
+        &self.consumer_name
+    }
+    #[must_use]
+    pub fn ack_mode(&self) -> AckMode {
+        self.ack_mode
+    }
+    #[must_use]
+    pub fn ordering_mode(&self) -> Option<OrderingMode> {
+        self.ordering_mode
+    }
+    #[must_use]
+    pub fn balance_mode(&self) -> Option<ConsumerBalanceMode> {
+        self.balance_mode
+    }
+    #[must_use]
+    pub fn guarantee(&self) -> Option<DeliveryGuarantee> {
+        self.guarantee
+    }
+    #[must_use]
+    pub fn max_in_flight(&self) -> usize {
+        self.max_in_flight
+    }
+    #[must_use]
+    pub fn max_pending_acks(&self) -> usize {
+        self.max_pending_acks
+    }
+    #[must_use]
+    pub fn max_retry(&self) -> usize {
+        self.max_retry
+    }
+    #[must_use]
+    pub fn retry_backoff(&self) -> Duration {
+        self.retry_backoff
+    }
+    #[must_use]
+    pub fn dead_letter_topic(&self) -> Option<&Topic> {
+        self.dead_letter_topic.as_ref()
+    }
+    #[must_use]
+    pub fn backpressure(&self) -> Option<&BackpressurePolicy> {
+        self.backpressure.as_ref()
+    }
+    #[must_use]
+    pub fn wildcard_topic(&self) -> bool {
+        self.wildcard_topic
+    }
+}
+
+/// Builder for [`SubscriptionConfig`]. Construct via
+/// [`SubscriptionConfig::builder`].
+#[must_use = "build the config and pass it to subscribe()"]
+#[derive(Debug, Clone)]
+pub struct SubscriptionConfigBuilder {
+    cfg: SubscriptionConfig,
+}
+
+impl SubscriptionConfigBuilder {
+    fn new(topic: Topic, consumer_group: ConsumerGroup) -> Self {
         Self {
-            topic: String::new(),
-            consumer_group: String::new(),
-            consumer_name: String::new(),
-            max_retry: 0,
-            retry_backoff: Duration::ZERO,
-            dead_letter_topic: None,
-            ack_mode: AckMode::Manual,
-            ordering_mode: None,
-            balance_mode: None,
-            guarantee: None,
-            max_in_flight: 0,
-            max_pending_acks: 0,
-            wildcard_topic: false,
-            backpressure: None,
+            cfg: SubscriptionConfig {
+                topic,
+                consumer_group,
+                consumer_name: ConsumerName::auto(),
+                max_retry: 0,
+                retry_backoff: Duration::ZERO,
+                dead_letter_topic: None,
+                ack_mode: AckMode::Manual,
+                ordering_mode: None,
+                balance_mode: None,
+                guarantee: None,
+                max_in_flight: 0,
+                max_pending_acks: 0,
+                wildcard_topic: false,
+                backpressure: None,
+            },
         }
+    }
+
+    pub fn consumer_name(mut self, n: ConsumerName) -> Self {
+        self.cfg.consumer_name = n;
+        self
+    }
+    pub fn max_retry(mut self, n: usize) -> Self {
+        self.cfg.max_retry = n;
+        self
+    }
+    pub fn retry_backoff(mut self, d: Duration) -> Self {
+        self.cfg.retry_backoff = d;
+        self
+    }
+    pub fn dead_letter_topic(mut self, t: Topic) -> Self {
+        self.cfg.dead_letter_topic = Some(t);
+        self
+    }
+    pub fn ack_mode(mut self, m: AckMode) -> Self {
+        self.cfg.ack_mode = m;
+        self
+    }
+    pub fn ordering(mut self, o: OrderingMode) -> Self {
+        self.cfg.ordering_mode = Some(o);
+        self
+    }
+    pub fn balance(mut self, b: ConsumerBalanceMode) -> Self {
+        self.cfg.balance_mode = Some(b);
+        self
+    }
+    pub fn guarantee(mut self, g: DeliveryGuarantee) -> Self {
+        self.cfg.guarantee = Some(g);
+        self
+    }
+    pub fn max_in_flight(mut self, n: usize) -> Self {
+        self.cfg.max_in_flight = n;
+        self
+    }
+    pub fn max_pending_acks(mut self, n: usize) -> Self {
+        self.cfg.max_pending_acks = n;
+        self
+    }
+    pub fn backpressure(mut self, p: BackpressurePolicy) -> Self {
+        self.cfg.backpressure = Some(p);
+        self
+    }
+    pub fn wildcard_topic(mut self) -> Self {
+        self.cfg.wildcard_topic = true;
+        self
+    }
+
+    /// Apply defaults, validate, and return the finished config.
+    pub fn build(mut self) -> Result<SubscriptionConfig, EventBusError> {
+        self.cfg.normalize_and_validate()?;
+        Ok(self.cfg)
     }
 }
 
@@ -318,49 +678,194 @@ impl SubscriptionConfig {
 // Traits
 // ---------------------------------------------------------------------------
 
+/// Read-only view of a message in flight.
+///
+/// Backends supply this to handlers as part of [`DeliveryHandle`]. The handler
+/// can inspect the message and delivery state, then call methods on
+/// [`DeliveryControl`] to finalize.
 pub trait Delivery: DeliveryInspector + Send + Sync {
     fn message(&self) -> &Message;
-    fn ack(&self) -> impl Future<Output = Result<(), EventBusError>> + Send;
-    fn nack(
-        &self,
-        reason: &(dyn std::error::Error + Send + Sync),
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
-    fn retry(
-        &self,
-        reason: &(dyn std::error::Error + Send + Sync),
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 }
 
+/// Finalize a delivery exactly once.
+///
+/// Each method consumes `Box<Self>`, so the compiler guarantees a delivery is
+/// finalized at most once: a handler that calls `ack()` cannot call `nack()`
+/// or `retry()` after — the box is already moved.
+///
+/// Dropping the box without calling any of these is also valid: the message
+/// is left un-acked and will be reclaimed by the backend after the
+/// configured idle timeout.
+pub trait DeliveryControl: Send {
+    fn ack(self: Box<Self>) -> crate::BoxFuture<'static, Result<(), EventBusError>>;
+    fn nack(
+        self: Box<Self>,
+        reason: crate::BoxedError,
+    ) -> crate::BoxFuture<'static, Result<(), EventBusError>>;
+    fn retry(
+        self: Box<Self>,
+        reason: crate::BoxedError,
+    ) -> crate::BoxFuture<'static, Result<(), EventBusError>>;
+}
+
+/// Composite trait — a handler-facing delivery. Anything that is both
+/// [`Delivery`] (read) and [`DeliveryControl`] (finalize) qualifies.
+pub trait DeliveryHandle: Delivery + DeliveryControl {}
+impl<T: Delivery + DeliveryControl + ?Sized> DeliveryHandle for T {}
+
 pub trait Handler: Send + Sync {
-    fn handle<D>(&self, delivery: &D) -> impl Future<Output = Result<(), EventBusError>> + Send
-    where
-        D: Delivery + Send + Sync;
+    fn handle(
+        &self,
+        delivery: Box<dyn DeliveryHandle>,
+    ) -> crate::BoxFuture<'_, Result<(), EventBusError>>;
 }
 
 pub trait Subscription: Send + Sync {
     fn name(&self) -> &str;
-    async fn close(&self) -> Result<(), EventBusError>;
+    fn close(self: Arc<Self>) -> crate::BoxFuture<'static, Result<(), EventBusError>>;
+}
+
+/// Backend-assigned identifier for a published message. Unvalidated — backends
+/// produce these strings, the bus only forwards them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+#[repr(transparent)]
+pub struct MessageId(String);
+
+impl MessageId {
+    #[must_use]
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::ops::Deref for MessageId {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for MessageId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for MessageId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for MessageId {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<String> for MessageId {
+    fn from(s: String) -> Self {
+        Self::new(s)
+    }
+}
+
+/// Per-message result for `publish_batch`. PR 5 will populate `results`
+/// during a full re-implementation that no longer fails fast.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct BatchOutcome {
+    pub results: Vec<Result<MessageId, EventBusError>>,
+}
+
+impl BatchOutcome {
+    #[must_use]
+    pub fn all_ok(&self) -> bool {
+        self.results.iter().all(Result::is_ok)
+    }
+    #[must_use]
+    pub fn ok_count(&self) -> usize {
+        self.results.iter().filter(|r| r.is_ok()).count()
+    }
+    #[must_use]
+    pub fn err_count(&self) -> usize {
+        self.results.len() - self.ok_count()
+    }
+    pub fn errors(&self) -> impl Iterator<Item = &EventBusError> {
+        self.results.iter().filter_map(|r| r.as_ref().err())
+    }
 }
 
 pub trait Publisher: Send + Sync {
-    async fn publish(&self, msg: Message, opts: PublishOptions) -> Result<(), EventBusError>;
+    fn publish(
+        &self,
+        msg: Message,
+        opts: PublishOptions,
+    ) -> crate::BoxFuture<'_, Result<MessageId, EventBusError>>;
 
-    async fn publish_batch<I>(&self, msgs: I, opts: PublishOptions) -> Result<(), EventBusError>
-    where
-        I: IntoIterator<Item = Message> + Send;
+    fn publish_batch(
+        &self,
+        msgs: Vec<Message>,
+        opts: PublishOptions,
+    ) -> crate::BoxFuture<'_, Result<BatchOutcome, EventBusError>>;
 }
 
-pub trait Subscriber: Send + Sync {
-    type Sub: Subscription;
+/// Convenience layer over [`Publisher`]. Generic methods that monomorphize
+/// for callers who don't need dynamic dispatch.
+pub trait PublisherExt: Publisher {
+    /// Publish an iterator of messages. Collects into `Vec` and delegates
+    /// to [`Publisher::publish_batch`]. The collect is mandatory because the
+    /// dyn-safe `publish_batch` cannot accept an opaque iterator.
+    fn publish_iter<I>(
+        &self,
+        msgs: I,
+        opts: PublishOptions,
+    ) -> crate::BoxFuture<'_, Result<BatchOutcome, EventBusError>>
+    where
+        I: IntoIterator<Item = Message> + Send + 'static,
+        I::IntoIter: Send,
+    {
+        let collected: Vec<Message> = msgs.into_iter().collect();
+        self.publish_batch(collected, opts)
+    }
+}
 
-    async fn subscribe<H>(
+impl<P: Publisher + ?Sized> PublisherExt for P {}
+
+pub trait Subscriber: Send + Sync {
+    fn subscribe(
+        &self,
+        cfg: SubscriptionConfig,
+        handler: Arc<dyn Handler>,
+    ) -> crate::BoxFuture<'_, Result<Arc<dyn Subscription>, EventBusError>>;
+}
+
+/// Convenience layer over [`Subscriber`]. Generic methods that monomorphize
+/// for callers who don't need dynamic dispatch.
+pub trait SubscriberExt: Subscriber {
+    fn subscribe_with<H>(
         &self,
         cfg: SubscriptionConfig,
         handler: H,
-    ) -> Result<Self::Sub, EventBusError>
+    ) -> crate::BoxFuture<'_, Result<Arc<dyn Subscription>, EventBusError>>
     where
-        H: Handler + Send + Sync + 'static;
+        H: Handler + 'static,
+    {
+        self.subscribe(cfg, Arc::new(handler))
+    }
 }
+
+impl<S: Subscriber + ?Sized> SubscriberExt for S {}
 
 pub trait Bus: Publisher + Subscriber + Send + Sync {}
 
@@ -427,40 +932,94 @@ mod tests {
         assert!(opts.validate().is_err());
     }
 
+    fn topic() -> Topic {
+        Topic::new("evt.test").expect("topic")
+    }
+    fn group() -> ConsumerGroup {
+        ConsumerGroup::new("cg.test").expect("group")
+    }
+
     #[test]
     fn subscription_config_preserves_explicit_ack_mode() {
-        let mut cfg = SubscriptionConfig {
-            ack_mode: AckMode::AutoOnHandlerSuccess,
-            max_in_flight: 8,
-            ..Default::default()
-        };
-        assert!(cfg.normalize_and_validate().is_ok());
-        assert_eq!(cfg.ack_mode, AckMode::AutoOnHandlerSuccess);
+        let cfg = SubscriptionConfig::builder(topic(), group())
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(8)
+            .build()
+            .expect("build");
+        assert_eq!(cfg.ack_mode(), AckMode::AutoOnHandlerSuccess);
     }
 
     #[test]
     fn subscription_config_defaults_to_manual_ack() {
-        let mut cfg = SubscriptionConfig {
-            max_in_flight: 8,
-            ..Default::default()
-        };
-        assert!(cfg.normalize_and_validate().is_ok());
-        assert_eq!(cfg.ack_mode, AckMode::Manual);
+        let cfg = SubscriptionConfig::builder(topic(), group())
+            .max_in_flight(8)
+            .build()
+            .expect("build");
+        assert_eq!(cfg.ack_mode(), AckMode::Manual);
     }
 
     #[test]
     fn subscription_config_rejects_conflicting_backpressure() {
-        let mut cfg = SubscriptionConfig {
-            ack_mode: AckMode::Manual,
-            max_in_flight: 8,
-            backpressure: Some(BackpressurePolicy {
+        let res = SubscriptionConfig::builder(topic(), group())
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(8)
+            .backpressure(BackpressurePolicy {
                 max_in_flight: 16,
                 max_pending_acks: 32,
                 max_batch_size: 8,
                 overflow_strategy: OverflowStrategy::Reject,
-            }),
-            ..Default::default()
-        };
-        assert!(cfg.normalize_and_validate().is_err());
+            })
+            .build();
+        assert!(res.is_err());
+    }
+}
+
+#[cfg(test)]
+mod topic_tests {
+    use super::*;
+
+    #[test]
+    fn topic_rejects_empty() {
+        assert!(Topic::new("").is_err());
+    }
+    #[test]
+    fn topic_rejects_only_whitespace() {
+        assert!(Topic::new("   ").is_err());
+    }
+    #[test]
+    fn topic_rejects_oversize() {
+        let s = "a".repeat(Topic::MAX_LEN + 1);
+        assert!(Topic::new(s).is_err());
+    }
+    #[test]
+    fn topic_rejects_control_chars() {
+        assert!(Topic::new("foo\x07bar").is_err());
+    }
+    #[test]
+    fn topic_accepts_normal() {
+        assert!(Topic::new("orders.created").is_ok());
+    }
+
+    #[test]
+    fn consumer_group_rejects_empty() {
+        assert!(ConsumerGroup::new("").is_err());
+    }
+    #[test]
+    fn consumer_group_accepts_normal() {
+        assert!(ConsumerGroup::new("cg.x").is_ok());
+    }
+
+    #[test]
+    fn consumer_name_auto_is_unique() {
+        let a = ConsumerName::auto();
+        let b = ConsumerName::auto();
+        assert_ne!(a.as_str(), b.as_str());
+        assert!(a.as_str().starts_with("consumer-"));
+    }
+
+    #[test]
+    fn message_id_is_unvalidated() {
+        let id = MessageId::new("");
+        assert_eq!(id.as_str(), "");
     }
 }
