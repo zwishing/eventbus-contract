@@ -31,7 +31,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use eventbus_core::stream::{StreamBus, StreamBusOptions};
     use eventbus_core::{
         AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
-        SubscriptionConfig,
     };
     use tokio::sync::mpsc;
     use tokio::time::timeout;
@@ -85,16 +84,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut rx) = mpsc::channel(8);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "demo.events".to_string(),
-                consumer_group: "demo-consumers".to_string(),
-                consumer_name: "worker-1".to_string(),
-                ack_mode: AckMode::Manual,
-                max_retry: 3,
-                dead_letter_topic: Some("demo.events.dlq".to_string()),
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("demo.events").expect("topic"),
+                eventbus_core::ConsumerGroup::new("demo-consumers").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("worker-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_retry(3)
+            .dead_letter_topic(eventbus_core::Topic::new("demo.events.dlq").expect("dlq topic"))
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             PrintHandler { tx },
         )
         .await?;
@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     bus.publish(
         Message {
             uid: uuid(),
-            topic: "demo.events".to_string(),
+            topic: eventbus_core::Topic::new("demo.events").expect("topic"),
             key: "entity-1".to_string(),
             kind: "DemoEvent".to_string(),
             source: "example".to_string(),

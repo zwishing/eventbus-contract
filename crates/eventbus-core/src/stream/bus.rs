@@ -309,7 +309,7 @@ impl<B: StreamBackend> StreamBus<B> {
         let message = Self::prepare_message(message, options, self.options.max_payload_bytes)?;
 
         let topic = message.topic.clone();
-        let id = self.backend.publish(&topic, message).await?;
+        let id = self.backend.publish(topic.as_str(), message).await?;
         Ok(MessageId::new(id))
     }
 
@@ -345,7 +345,10 @@ impl<B: StreamBackend> StreamBus<B> {
             let backend = Arc::clone(&self.backend);
             tasks.spawn(async move {
                 let topic = message.topic.clone();
-                backend.publish(&topic, message).await.map(MessageId::new)
+                backend
+                    .publish(topic.as_str(), message)
+                    .await
+                    .map(MessageId::new)
             });
         }
 
@@ -391,8 +394,7 @@ impl<B: StreamBackend> StreamBus<B> {
         options: &PublishOptions,
         max_payload_bytes: usize,
     ) -> Result<Message, EventBusError> {
-        validate_topic(&message.topic)?;
-
+        // Topic was validated at `Topic::new` construction; nothing to do here.
         if max_payload_bytes > 0 && message.payload.len() > max_payload_bytes {
             return Err(EventBusError::Validation(format!(
                 "message payload {} bytes exceeds max_payload_bytes {}",
@@ -454,9 +456,9 @@ impl<B: StreamBackend> StreamBus<B> {
                 .min(available);
 
             let read_future = self.backend.read_new(
-                &runtime.config.topic,
-                &runtime.config.consumer_group,
-                &runtime.config.consumer_name,
+                runtime.config.topic.as_str(),
+                runtime.config.consumer_group.as_str(),
+                runtime.config.consumer_name.as_str(),
                 read_limit,
                 self.options.block_timeout,
             );
@@ -535,7 +537,7 @@ impl<B: StreamBackend> StreamBus<B> {
         let _ = flusher_handle.await;
 
         self.backend
-            .forget_consumer(&topic, &group, &consumer)
+            .forget_consumer(topic.as_str(), group.as_str(), consumer.as_str())
             .await;
 
         if let Some(err) = first_delivery_error {
@@ -601,15 +603,15 @@ impl<B: StreamBackend> StreamBus<B> {
             obs.on_error(ErrorScope::Read, &error);
         }
 
-        if let Some(dlq) = config.dead_letter_topic.as_deref() {
+        if let Some(dlq) = config.dead_letter_topic.as_ref() {
             let mut headers = std::collections::HashMap::new();
             headers.insert(HEADER_DEAD_LETTER_REASON.to_string(), error.to_string());
             let envelope = Message {
                 uid: format!("malformed-{id}"),
-                topic: dlq.to_string(),
+                topic: dlq.clone(),
                 key: id.clone(),
                 kind: "eventbus.malformed".into(),
-                source: config.topic.clone(),
+                source: config.topic.as_str().to_string(),
                 occurred_at: Utc::now(),
                 headers,
                 payload: bytes::Bytes::new(),
@@ -620,7 +622,7 @@ impl<B: StreamBackend> StreamBus<B> {
                 trace_uid: None,
                 correlation_uid: None,
             };
-            if let Err(err) = self.backend.publish(dlq, envelope).await {
+            if let Err(err) = self.backend.publish(dlq.as_str(), envelope).await {
                 if let Some(obs) = self.options.error_observer.as_ref() {
                     obs.on_error(ErrorScope::Read, &err);
                 }
@@ -631,7 +633,7 @@ impl<B: StreamBackend> StreamBus<B> {
 
         if let Err(err) = self
             .backend
-            .ack(&config.topic, &config.consumer_group, &id)
+            .ack(config.topic.as_str(), config.consumer_group.as_str(), &id)
             .await
         {
             if let Some(obs) = self.options.error_observer.as_ref() {
@@ -771,18 +773,12 @@ impl<B: StreamBackend> StreamBus<B> {
         mut cfg: SubscriptionConfig,
         handler: Arc<dyn Handler>,
     ) -> Result<StreamSubscription, EventBusError> {
-        validate_topic(&cfg.topic)?;
-        if cfg.consumer_group.trim().is_empty() {
-            return Err(EventBusError::Validation(
-                "consumer group is required".into(),
-            ));
-        }
-        if cfg.consumer_name.trim().is_empty() {
-            // Append a random suffix because nanosecond resolution is not
-            // unique under container co-launch or clock skew/regression.
-            let nanos = Utc::now().timestamp_nanos_opt().unwrap_or_default();
-            let entropy: u64 = rand::thread_rng().gen();
-            cfg.consumer_name = format!("consumer-{nanos}-{entropy:016x}");
+        // Topic / group / name are newtypes (validated at construction).
+        // Defensive normalize_and_validate in case the caller hand-built the
+        // config bypassing the builder.
+        if cfg.consumer_name.as_str().trim().is_empty() {
+            // Replace blank consumer-name with a unique auto-generated one.
+            cfg.consumer_name = crate::ConsumerName::auto();
         }
 
         cfg.normalize_and_validate()?;
@@ -795,8 +791,8 @@ impl<B: StreamBackend> StreamBus<B> {
 
         self.backend
             .create_group(
-                &cfg.topic,
-                &cfg.consumer_group,
+                cfg.topic.as_str(),
+                cfg.consumer_group.as_str(),
                 &self.options.group_start_id,
             )
             .await?;
@@ -811,10 +807,10 @@ impl<B: StreamBackend> StreamBus<B> {
         // through ack flush, so `max_in_flight` already bounds the
         // handler+pending-ack pipeline.
         let limit = cfg.max_in_flight.max(1);
-        let consumer_name = cfg.consumer_name.clone();
+        let consumer_name = cfg.consumer_name.as_str().to_string();
 
-        let stream = cfg.topic.clone();
-        let group = cfg.consumer_group.clone();
+        let stream = cfg.topic.as_str().to_string();
+        let group = cfg.consumer_group.as_str().to_string();
         let (ack_tx, flusher_handle) = ack_flusher::spawn(
             Arc::clone(&self.backend),
             stream,
@@ -834,9 +830,9 @@ impl<B: StreamBackend> StreamBus<B> {
                 close_rx: close_rx.clone(),
                 limiter: Arc::clone(&limiter),
                 reclaim_tx,
-                topic: cfg.topic.clone(),
-                group: cfg.consumer_group.clone(),
-                consumer: cfg.consumer_name.clone(),
+                topic: cfg.topic.as_str().to_string(),
+                group: cfg.consumer_group.as_str().to_string(),
+                consumer: cfg.consumer_name.as_str().to_string(),
                 claim_idle_timeout: self.options.claim_idle_timeout,
                 claim_scan_batch_size: self.options.claim_scan_batch_size,
                 reclaim_interval: self.options.reclaim_interval,
@@ -958,34 +954,6 @@ async fn reclaim_loop<B: StreamBackend>(args: ReclaimLoopArgs<B>) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Maximum allowed topic length (chars). Bounds the size of payloads / cursor
-/// keys / log lines downstream. 1 KiB is generous — real topics are short.
-const MAX_TOPIC_LEN: usize = 1024;
-
-/// Validate a topic name at the bus boundary (publish + subscribe).
-///
-/// Rejects empty / whitespace-only names, names longer than [`MAX_TOPIC_LEN`],
-/// and any string containing ASCII control characters. Backends that treat
-/// topic names as paths or queries (future work) can add their own further
-/// restrictions; this is the floor.
-fn validate_topic(topic: &str) -> Result<(), EventBusError> {
-    if topic.trim().is_empty() {
-        return Err(EventBusError::Validation("topic is required".into()));
-    }
-    if topic.len() > MAX_TOPIC_LEN {
-        return Err(EventBusError::Validation(format!(
-            "topic length {} exceeds limit of {MAX_TOPIC_LEN}",
-            topic.len()
-        )));
-    }
-    if topic.chars().any(|c| c.is_control()) {
-        return Err(EventBusError::Validation(
-            "topic must not contain control characters".into(),
-        ));
-    }
-    Ok(())
-}
 
 /// Drain synchronously-ready completed tasks without an executor roundtrip.
 fn drain_completed_tasks(

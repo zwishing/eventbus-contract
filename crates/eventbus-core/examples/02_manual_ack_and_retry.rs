@@ -24,7 +24,6 @@ use chrono::Utc;
 use eventbus_core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
 use eventbus_core::{
     AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
-    SubscriptionConfig,
 };
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -106,7 +105,7 @@ impl Handler for AlwaysFailHandler {
 fn sample_message(topic: &str, uid: &str) -> Message {
     Message {
         uid: uid.to_string(),
-        topic: topic.to_string(),
+        topic: eventbus_core::Topic::new(topic).expect("topic"),
         key: "order-99".to_string(),
         kind: "OrderPlaced".to_string(),
         source: "order-service".to_string(),
@@ -141,15 +140,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let sub = bus
             .subscribe(
-                SubscriptionConfig {
-                    topic: "order.placed".to_string(),
-                    consumer_group: "fulfillment".to_string(),
-                    consumer_name: "worker-1".to_string(),
-                    ack_mode: AckMode::Manual,
-                    max_retry: 3,
-                    max_in_flight: 1,
-                    ..Default::default()
-                },
+                eventbus_core::SubscriptionConfig::builder(
+                    eventbus_core::Topic::new("order.placed").expect("topic"),
+                    eventbus_core::ConsumerGroup::new("fulfillment").expect("group"),
+                )
+                .consumer_name(eventbus_core::ConsumerName::new("worker-1").expect("consumer name"))
+                .ack_mode(AckMode::Manual)
+                .max_retry(3)
+                .max_in_flight(1)
+                .build()
+                .expect("build subscription config"),
                 RetryingHandler {
                     attempts: Arc::clone(&attempts),
                     tx,
@@ -190,15 +190,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let sub = bus
             .subscribe(
-                SubscriptionConfig {
-                    topic: "payment.event".to_string(),
-                    consumer_group: "ledger".to_string(),
-                    consumer_name: "worker-1".to_string(),
-                    ack_mode: AckMode::Manual,
-                    dead_letter_topic: Some("payment.event.dlq".to_string()),
-                    max_in_flight: 1,
-                    ..Default::default()
-                },
+                eventbus_core::SubscriptionConfig::builder(
+                    eventbus_core::Topic::new("payment.event").expect("topic"),
+                    eventbus_core::ConsumerGroup::new("ledger").expect("group"),
+                )
+                .consumer_name(eventbus_core::ConsumerName::new("worker-1").expect("consumer name"))
+                .ack_mode(AckMode::Manual)
+                .dead_letter_topic(
+                    eventbus_core::Topic::new("payment.event.dlq").expect("dlq topic"),
+                )
+                .max_in_flight(1)
+                .build()
+                .expect("build subscription config"),
                 AlwaysFailHandler { tx },
             )
             .await?;

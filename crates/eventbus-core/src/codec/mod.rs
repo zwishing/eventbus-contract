@@ -60,7 +60,7 @@ mod json {
         fn sample() -> Message {
             Message {
                 uid: "u".into(),
-                topic: "t".into(),
+                topic: crate::Topic::new("t").expect("topic"),
                 key: "k".into(),
                 kind: "Kind".into(),
                 source: "s".into(),

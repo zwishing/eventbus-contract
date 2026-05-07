@@ -74,16 +74,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tasks concurrently while sharing the same consumer group.
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "job.created".to_string(),
-                consumer_group: "job-processor".to_string(),
-                // The Redis consumer identity stays stable for this subscriber
-                // even when max_in_flight > 1 — handlers run on a shared name.
-                consumer_name: "processor".to_string(),
-                max_in_flight: WORKER_COUNT,
-                ack_mode: AckMode::Manual,
-                ..Default::default()
-            },
+            // The Redis consumer identity stays stable for this subscriber
+            // even when max_in_flight > 1 — handlers run on a shared name.
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("job.created").expect("topic"),
+                eventbus_core::ConsumerGroup::new("job-processor").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("processor").expect("consumer name"))
+            .max_in_flight(WORKER_COUNT)
+            .ack_mode(AckMode::Manual)
+            .build()
+            .expect("build subscription config"),
             WorkerHandler {
                 worker_id: 0, // all workers share the same handler type; worker_id
                 // is illustrative — in practice you'd use thread-local
@@ -99,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bus.publish(
             Message {
                 uid: format!("job-{i:03}"),
-                topic: "job.created".to_string(),
+                topic: eventbus_core::Topic::new("job.created").expect("topic"),
                 key: format!("job-{i}"),
                 kind: "JobCreated".to_string(),
                 source: "scheduler".to_string(),

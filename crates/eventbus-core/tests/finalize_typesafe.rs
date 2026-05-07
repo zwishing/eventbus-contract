@@ -25,7 +25,6 @@ use chrono::Utc;
 use eventbus_core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
 use eventbus_core::{
     AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
-    SubscriptionConfig,
 };
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
@@ -33,7 +32,7 @@ use tokio::time::{sleep, timeout};
 fn message(topic: &str, uid: &str) -> Message {
     Message {
         uid: uid.to_string(),
-        topic: topic.to_string(),
+        topic: eventbus_core::Topic::new(topic).expect("topic"),
         key: String::new(),
         kind: "test.message".to_string(),
         source: "test".to_string(),
@@ -118,14 +117,17 @@ async fn dropping_box_without_finalize_releases_permit() {
 
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.drop".to_string(),
-                consumer_group: "cg.drop".to_string(),
-                consumer_name: "consumer-drop".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.drop").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.drop").expect("group"),
+            )
+            .consumer_name(
+                eventbus_core::ConsumerName::new("consumer-drop").expect("consumer name"),
+            )
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             handler,
         )
         .await
@@ -159,13 +161,14 @@ async fn ack_consumes_box_and_clears_pending() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.ack".to_string(),
-                consumer_group: "cg.ack".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.ack").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.ack").expect("group"),
+            )
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             AckOnceHandler { tx },
         )
         .await

@@ -508,7 +508,7 @@ mod tests {
         let bytes = codec
             .encode(&Message {
                 uid: "msg-1".into(),
-                topic: "orders.created".into(),
+                topic: crate::Topic::new("orders.created").expect("topic"),
                 key: "order-1".into(),
                 kind: "orders.created".into(),
                 source: "tests".into(),
