@@ -1,5 +1,5 @@
 //! Built-in [`Codec`](eventbus_core::Codec) implementations for the
-//! [`eventbus-redis`] crate.
+//! `eventbus-redis` crate.
 //!
 //! Currently:
 //! - [`JsonCodec`]: wire-compatible with the Go `StreamBus`. Encodes a

@@ -8,7 +8,7 @@
 //! Wire format is compatible with the Go `StreamBus` — messages are
 //! serialised as JSON inside a `{"message": ...}` envelope stored in the
 //! `"message"` field of each Redis Stream entry. Override the default
-//! [`JsonCodec`](crate::codec::JsonCodec) via [`RedisBackend::with_codec`]
+//! [`crate::codec::JsonCodec`] via [`RedisBackend::with_codec`]
 //! when wire-compat with the Go implementation is not required.
 //!
 //! # Connection security

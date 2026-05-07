@@ -38,7 +38,7 @@ pub use eventbus_integration as integration;
 pub mod prelude {
     //! Common imports for users of the event bus.
     pub use eventbus_core::{
-        AckMode, BackpressurePolicy, BatchOutcome, BoxFuture, BoxedError, Bus, Codec,
+        AckMode, BackpressurePolicy, BatchError, BatchOutcome, BoxFuture, BoxedError, Bus, Codec,
         ConsumerBalanceMode, ConsumerGroup, ConsumerName, Delivery, DeliveryControl,
         DeliveryGuarantee, DeliveryHandle, DeliveryState, EventBusError, Handler, Message,
         MessageId, OrderingMode, OverflowStrategy, PublishConfirmation, PublishOptions, Publisher,
