@@ -1,34 +1,36 @@
-[package]
-name = "eventbus-contract"
-version = "0.1.0"
+[workspace]
+resolver = "2"
+members = [
+    "crates/eventbus-core",
+    "crates/eventbus-memory",
+    "crates/eventbus-redis",
+    "crates/eventbus-outbox",
+    "crates/eventbus-integration",
+    "crates/eventbus",
+]
+
+[workspace.package]
+version = "0.2.0-alpha.1"
 edition = "2021"
-description = "Event bus contract library — pluggable publisher/subscriber traits with Redis Stream and in-memory backends"
 license = "MIT"
 repository = "https://github.com/zwishing/eventbus-contract"
-homepage = "https://github.com/zwishing/eventbus-contract"
-documentation = "https://docs.rs/eventbus-contract"
-exclude = [".idea", ".DS_Store", ".omx", "AGENTS.md", "CLAUDE.md"]
-readme = "README.md"
-keywords = ["eventbus", "event-driven", "messaging", "redis", "streams"]
-categories = ["asynchronous", "network-programming"]
 rust-version = "1.82"
 
-[features]
-default = []
-redis-backend = ["dep:redis", "dep:serde_json"]
-
-[dependencies]
+[workspace.dependencies]
 base64 = "0.22"
 bytes = { version = "1", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
 rand = "0.8"
-redis = { version = "1", features = ["tokio-comp", "streams"], optional = true }
+redis = { version = "1", features = ["tokio-comp", "streams"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", optional = true }
+serde_json = "1"
 thiserror = "1"
 tokio = { version = "1.42.2", features = ["macros", "rt", "sync", "time"] }
+tracing = "0.1"
+futures-core = "0.3"
+pin-project-lite = "0.2"
 
-[dev-dependencies]
-serde_json = "1"
-tokio = { version = "1.42.2", features = ["macros", "rt-multi-thread", "sync", "time"] }
+[profile.release]
+lto = "fat"
+codegen-units = 1

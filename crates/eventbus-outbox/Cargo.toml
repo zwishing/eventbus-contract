@@ -1,0 +1,12 @@
+[package]
+name = "eventbus-outbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Outbox + Dispatcher + DeadLetterStore traits"
+
+[dependencies]
+eventbus-core = { path = "../eventbus-core", version = "0.2.0-alpha.1" }
+chrono.workspace = true
