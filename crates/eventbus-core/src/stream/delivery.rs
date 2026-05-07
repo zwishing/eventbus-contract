@@ -57,6 +57,7 @@ impl<B: StreamBackend> StreamDelivery<B> {
         }
     }
 
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(message_id = %self.message_id)))]
     async fn mark_acked(&self) -> Result<(), EventBusError> {
         let (done_tx, done_rx) = oneshot::channel();
         self.ack_tx
@@ -71,6 +72,7 @@ impl<B: StreamBackend> StreamDelivery<B> {
             .map_err(|_| EventBusError::Internal("ack flusher dropped response".into()))?
     }
 
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(reason)))]
     async fn publish_dead_letter(&self, reason: &str) -> Result<(), EventBusError> {
         if let Some(dead_letter_topic) = self.config.dead_letter_topic().cloned() {
             let mut dead_letter = Message::clone(&self.message);
