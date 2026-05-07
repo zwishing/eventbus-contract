@@ -55,7 +55,9 @@ impl Handler for RetryingHandler {
             if attempt == 1 {
                 // Transient failure — ask the bus to republish for redelivery.
                 delivery
-                    .retry(Box::new(std::io::Error::other("temporary downstream error")))
+                    .retry(Box::new(std::io::Error::other(
+                        "temporary downstream error",
+                    )))
                     .await?;
                 println!("[handler] → retried");
             } else {

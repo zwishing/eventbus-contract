@@ -95,10 +95,7 @@ impl DeliveryControl for AutoFinalizeProxy {
         })
     }
 
-    fn nack(
-        self: Box<Self>,
-        reason: BoxedError,
-    ) -> BoxFuture<'static, Result<(), EventBusError>> {
+    fn nack(self: Box<Self>, reason: BoxedError) -> BoxFuture<'static, Result<(), EventBusError>> {
         Box::pin(async move {
             match self.take() {
                 Some(b) => b.nack(reason).await,
@@ -107,10 +104,7 @@ impl DeliveryControl for AutoFinalizeProxy {
         })
     }
 
-    fn retry(
-        self: Box<Self>,
-        reason: BoxedError,
-    ) -> BoxFuture<'static, Result<(), EventBusError>> {
+    fn retry(self: Box<Self>, reason: BoxedError) -> BoxFuture<'static, Result<(), EventBusError>> {
         Box::pin(async move {
             match self.take() {
                 Some(b) => b.retry(reason).await,
