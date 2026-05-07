@@ -8,8 +8,8 @@ use tokio::{
 };
 
 use crate::{
-    AckMode, BatchOutcome, Delivery, EventBusError, Handler, Message, MessageId, PublishOptions,
-    Publisher, Subscriber, SubscriptionConfig,
+    AckMode, BatchOutcome, BoxedError, DeliveryControl, DeliveryHandle, EventBusError, Handler,
+    Message, MessageId, PublishOptions, Publisher, Subscriber, SubscriptionConfig,
 };
 
 use super::{
@@ -648,14 +648,41 @@ impl<B: StreamBackend> StreamBus<B> {
         permit: OwnedSemaphorePermit,
         ack_tx: mpsc::Sender<AckRequest>,
     ) -> Result<(), EventBusError> {
+        use super::auto_finalize::AutoFinalizeTracker;
+
         // `max_retry` is the number of *retries*; the initial delivery
         // doesn't count, so the attempt budget is `max_retry + 1`. With
         // `max_retry = 0`, the first failure goes straight to DLQ.
         let max_attempt = (config.max_retry as u32).saturating_add(1);
         let state = claimed.state.with_max_attempt(max_attempt);
-
+        let max_payload_bytes = self.options.max_payload_bytes;
         let ack_mode = config.ack_mode;
-        let delivery = StreamDelivery::new(
+
+        // Post-decode safety net: oversized payloads are routed straight to
+        // dead-letter (when configured) so the user handler never sees them.
+        if max_payload_bytes > 0 && claimed.message.payload.len() > max_payload_bytes {
+            let oversize_err = EventBusError::Validation(format!(
+                "received payload {} bytes exceeds max_payload_bytes {}",
+                claimed.message.payload.len(),
+                max_payload_bytes,
+            ));
+            let delivery = Box::new(StreamDelivery::new(
+                Arc::clone(&self.backend),
+                ack_tx,
+                claimed.id,
+                claimed.message,
+                state,
+                Arc::clone(&config),
+                permit,
+            ));
+            if config.dead_letter_topic.is_some() {
+                let reason: BoxedError = Box::new(SimpleError(oversize_err.to_string()));
+                return delivery.nack(reason).await;
+            }
+            return Err(oversize_err);
+        }
+
+        let delivery = Box::new(StreamDelivery::new(
             Arc::clone(&self.backend),
             ack_tx,
             claimed.id,
@@ -663,45 +690,62 @@ impl<B: StreamBackend> StreamBus<B> {
             state,
             Arc::clone(&config),
             permit,
-        );
+        ));
 
-        // Post-decode safety net: oversized payloads are routed straight to
-        // dead-letter (when configured) so the user handler never sees them.
-        let max_payload_bytes = self.options.max_payload_bytes;
-        if max_payload_bytes > 0 && delivery.message().payload.len() > max_payload_bytes {
-            let oversize_err = EventBusError::Validation(format!(
-                "received payload {} bytes exceeds max_payload_bytes {}",
-                delivery.message().payload.len(),
-                max_payload_bytes,
-            ));
-            if config.dead_letter_topic.is_some() {
-                delivery.nack(&oversize_err).await?;
-            } else {
-                return Err(oversize_err);
+        match ack_mode {
+            AckMode::AutoOnReceive => {
+                // Pre-ack via the internal seam, then deliver. The handler still
+                // gets a fully-functional `DeliveryHandle`; if it calls `ack()`
+                // again it just re-enqueues a redundant XACK which the backend
+                // treats as idempotent (Redis silently ignores unknown ids;
+                // the in-memory backend likewise no-ops on missing ids).
+                delivery.pre_ack().await?;
+                let boxed: Box<dyn DeliveryHandle> = delivery;
+                // Handler errors in Auto/Manual modes are the handler's concern;
+                // they don't drive any bus-level retry decision (the message is
+                // already finalized for AutoOnReceive, and Manual leaves the
+                // ack decision entirely to the handler).
+                let _ = handler.handle(boxed).await;
+                Ok(())
             }
-            return Ok(());
-        }
-
-        if ack_mode == AckMode::AutoOnReceive {
-            delivery.ack().await?;
-        }
-
-        match handler.handle(&delivery).await {
-            Ok(()) => {
-                if ack_mode == AckMode::AutoOnHandlerSuccess && !delivery.is_finalized() {
-                    delivery.ack().await?;
+            AckMode::Manual => {
+                let boxed: Box<dyn DeliveryHandle> = delivery;
+                let _ = handler.handle(boxed).await;
+                Ok(())
+            }
+            AckMode::AutoOnHandlerSuccess => {
+                let real: Box<dyn DeliveryHandle> = delivery;
+                let (tracker, proxy) = AutoFinalizeTracker::new(real).await?;
+                let proxy_boxed: Box<dyn DeliveryHandle> = Box::new(proxy);
+                let result = handler.handle(proxy_boxed).await;
+                // If the handler did not finalize via the proxy, do it for them.
+                if let Some(remaining) = tracker.take_remaining() {
+                    match &result {
+                        Ok(()) => remaining.ack().await?,
+                        Err(err) => {
+                            let reason: BoxedError = Box::new(SimpleError(err.to_string()));
+                            remaining.retry(reason).await?;
+                        }
+                    }
                 }
-            }
-            Err(err) => {
-                if ack_mode == AckMode::AutoOnHandlerSuccess && !delivery.is_finalized() {
-                    delivery.retry(&err).await?;
-                }
+                Ok(())
             }
         }
-
-        Ok(())
     }
 }
+
+/// Concrete error type used to wrap [`EventBusError`] strings into a
+/// [`BoxedError`] when finalizing a delivery from inside the consume loop.
+#[derive(Debug)]
+struct SimpleError(String);
+
+impl std::fmt::Display for SimpleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SimpleError {}
 
 impl<B: StreamBackend> Publisher for StreamBus<B> {
     fn publish(

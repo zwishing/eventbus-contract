@@ -30,8 +30,9 @@ pub use delivery_contract::{
 pub use dispatcher::{Config, Dispatcher, DispatcherConfig, Listener, Notification, Notifier};
 pub use error::EventBusError;
 pub use eventbus::{
-    BatchOutcome, Bus, Codec, Delivery, Handler, Headers, Message, MessageId, PublishOptions,
-    Publisher, PublisherExt, Subscriber, SubscriberExt, Subscription, SubscriptionConfig, Topic,
+    BatchOutcome, Bus, Codec, Delivery, DeliveryControl, DeliveryHandle, Handler, Headers, Message,
+    MessageId, PublishOptions, Publisher, PublisherExt, Subscriber, SubscriberExt, Subscription,
+    SubscriptionConfig, Topic,
 };
 pub use idempotency::{IdempotencyClaim, IdempotencyClaimStore, IdempotencyStore};
 pub use integration::{EventPublisher, IntegrationEvent, MessageFactory};

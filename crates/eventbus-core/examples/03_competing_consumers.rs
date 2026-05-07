@@ -21,7 +21,8 @@ use std::time::Duration;
 use chrono::Utc;
 use eventbus_core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
 use eventbus_core::{
-    AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig,
+    AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
+    SubscriptionConfig,
 };
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -37,10 +38,10 @@ struct WorkerHandler {
 }
 
 impl Handler for WorkerHandler {
-    fn handle<'a>(
-        &'a self,
-        delivery: &'a (dyn Delivery + Send + Sync),
-    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+    fn handle(
+        &self,
+        delivery: Box<dyn DeliveryHandle>,
+    ) -> eventbus_core::BoxFuture<'_, Result<(), EventBusError>> {
         Box::pin(async move {
             let uid = delivery.message().uid.clone();
             self.processed.fetch_add(1, Ordering::SeqCst);

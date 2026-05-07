@@ -23,7 +23,8 @@ use std::time::Duration;
 use chrono::Utc;
 use eventbus_core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
 use eventbus_core::{
-    AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions, SubscriptionConfig,
+    AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
+    SubscriptionConfig,
 };
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -38,10 +39,10 @@ struct RetryingHandler {
 }
 
 impl Handler for RetryingHandler {
-    fn handle<'a>(
-        &'a self,
-        delivery: &'a (dyn Delivery + Send + Sync),
-    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+    fn handle(
+        &self,
+        delivery: Box<dyn DeliveryHandle>,
+    ) -> eventbus_core::BoxFuture<'_, Result<(), EventBusError>> {
         Box::pin(async move {
             let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
             let state = delivery.state().await?;
@@ -54,7 +55,7 @@ impl Handler for RetryingHandler {
             if attempt == 1 {
                 // Transient failure — ask the bus to republish for redelivery.
                 delivery
-                    .retry(&std::io::Error::other("temporary downstream error"))
+                    .retry(Box::new(std::io::Error::other("temporary downstream error")))
                     .await?;
                 println!("[handler] → retried");
             } else {
@@ -79,14 +80,14 @@ struct AlwaysFailHandler {
 }
 
 impl Handler for AlwaysFailHandler {
-    fn handle<'a>(
-        &'a self,
-        delivery: &'a (dyn Delivery + Send + Sync),
-    ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+    fn handle(
+        &self,
+        delivery: Box<dyn DeliveryHandle>,
+    ) -> eventbus_core::BoxFuture<'_, Result<(), EventBusError>> {
         Box::pin(async move {
             println!("[dlq-handler] message is poison — routing to dead letter");
             delivery
-                .nack(&std::io::Error::other("unrecoverable parse error"))
+                .nack(Box::new(std::io::Error::other("unrecoverable parse error")))
                 .await?;
             self.tx
                 .send(())
