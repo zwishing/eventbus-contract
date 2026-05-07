@@ -9,18 +9,14 @@ description = "Object-safe event bus contract traits and types"
 
 [features]
 default = []
-redis-backend = ["dep:redis", "dep:serde_json"]
 tracing = ["dep:tracing"]
 
 [dependencies]
 base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
-dashmap.workspace = true
 rand.workspace = true
-redis = { workspace = true, optional = true }
 serde.workspace = true
-serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing = { workspace = true, optional = true }
@@ -28,8 +24,3 @@ tracing = { workspace = true, optional = true }
 [dev-dependencies]
 serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
-criterion = { version = "0.5", default-features = false, features = ["async_tokio"] }
-
-[[bench]]
-name = "publish"
-harness = false

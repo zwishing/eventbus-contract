@@ -15,3 +15,13 @@ test-utils = []
 eventbus-core = { path = "../eventbus-core", version = "0.2.0" }
 chrono.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+bytes.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+criterion = { version = "0.5", default-features = false, features = ["async_tokio"] }
+
+[[bench]]
+name = "publish"
+harness = false

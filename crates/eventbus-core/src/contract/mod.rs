@@ -1,3 +1,6 @@
+pub mod delivery;
+pub mod message;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::EventBusError;

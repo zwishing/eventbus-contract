@@ -1,0 +1,143 @@
+//! # Real Redis Backend
+//!
+//! Demonstrates using `RedisBackend` with a real Redis server.
+//!
+//! Requires a running Redis instance:
+//!
+//! ```text
+//! # Start Redis (Docker)
+//! docker run --rm -p 6379:6379 redis:7
+//!
+//! # Run the example
+//! cargo run --example 04_redis_backend
+//! ```
+//!
+//! The wire format is JSON-compatible with the Go `StreamBus`:
+//! each entry is stored as `XADD <topic> * message <json>`.
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+
+    use chrono::Utc;
+    use eventbus_core::stream::StreamBusOptions;
+    use eventbus_core::{
+        AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
+    };
+    use tokio::sync::mpsc;
+    use tokio::time::timeout;
+
+    // -----------------------------------------------------------------------
+    // Handler
+    // -----------------------------------------------------------------------
+
+    struct PrintHandler {
+        tx: mpsc::Sender<Message>,
+    }
+
+    impl Handler for PrintHandler {
+        fn handle(
+            &self,
+            delivery: Box<dyn DeliveryHandle>,
+        ) -> eventbus_core::BoxFuture<'_, Result<(), EventBusError>> {
+            Box::pin(async move {
+                let msg = delivery.message().clone();
+                println!(
+                    "[handler] topic={} uid={} kind={}",
+                    msg.topic, msg.uid, msg.kind
+                );
+                delivery.ack().await?;
+                self.tx
+                    .send(msg)
+                    .await
+                    .map_err(|e| EventBusError::Internal(e.to_string()))
+            })
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Connect
+    // -----------------------------------------------------------------------
+
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+
+    println!("[main] connecting to {redis_url}");
+    let client = redis::Client::open(redis_url.as_str())?;
+    let conn = client.get_multiplexed_async_connection().await?;
+
+    // `stream_bus_from_connection` wraps the connection in a RedisBackend
+    // (using the default JsonCodec) and creates the bus.
+    let bus = eventbus_redis::stream_bus_from_connection(conn, StreamBusOptions::default())?;
+
+    // -----------------------------------------------------------------------
+    // Subscribe
+    // -----------------------------------------------------------------------
+
+    let (tx, mut rx) = mpsc::channel(8);
+    let sub = bus
+        .subscribe(
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("demo.events").expect("topic"),
+                eventbus_core::ConsumerGroup::new("demo-consumers").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("worker-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_retry(3)
+            .dead_letter_topic(eventbus_core::Topic::new("demo.events.dlq").expect("dlq topic"))
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
+            PrintHandler { tx },
+        )
+        .await?;
+
+    // -----------------------------------------------------------------------
+    // Publish
+    // -----------------------------------------------------------------------
+
+    println!("[main] publishing…");
+    bus.publish(
+        Message {
+            uid: uuid(),
+            topic: eventbus_core::Topic::new("demo.events").expect("topic"),
+            key: "entity-1".to_string(),
+            kind: "DemoEvent".to_string(),
+            source: "example".to_string(),
+            occurred_at: Utc::now(),
+            headers: Headers::new(),
+            payload: bytes::Bytes::from_static(br#"{"hello": "world"}"#),
+            content_type: Some("application/json".to_string()),
+            event_version: Some("1.0".to_string()),
+            idempotency_key: Some(uuid()),
+            expires_at: None,
+            trace_uid: None,
+            correlation_uid: None,
+        },
+        PublishOptions::new().with_metadata("env", "example"),
+    )
+    .await?;
+
+    // -----------------------------------------------------------------------
+    // Wait for delivery
+    // -----------------------------------------------------------------------
+
+    let received = timeout(Duration::from_secs(10), rx.recv())
+        .await?
+        .expect("channel closed");
+
+    println!("[main] delivered uid={}", received.uid);
+
+    sub.close().await?;
+    println!("[main] done");
+    Ok(())
+}
+
+fn uuid() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    format!("demo-{ns:010}")
+}

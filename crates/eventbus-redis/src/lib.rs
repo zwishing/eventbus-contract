@@ -6,9 +6,12 @@
 //! - [`JsonCodec`] — default JSON [`Codec`](eventbus_core::Codec) for envelope
 //!   payloads.
 //!
-//! Enable via `eventbus = { version = "0.2", features = ["redis"] }`. Pair
+//! Enable via `eventbus-contract = { version = "0.2", features = ["redis"] }`. Pair
 //! with [`StreamBus`](eventbus_core::stream::StreamBus) to obtain a
 //! `Publisher + Subscriber`. The `tls` feature wires `redis` over native-TLS.
 
-pub use eventbus_core::codec::JsonCodec;
-pub use eventbus_core::stream::RedisBackend;
+pub mod codec;
+pub mod redis;
+
+pub use codec::JsonCodec;
+pub use redis::{stream_bus_from_connection, RedisBackend};
