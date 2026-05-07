@@ -7,13 +7,14 @@ use std::{collections::VecDeque, future::Future, pin::Pin};
 
 use chrono::Utc;
 use eventbus_core::stream::{
-    ClaimedMessage, ErrorObserver, ErrorScope, FetchedEntry, MemoryStreamBackend, StreamBackend,
-    StreamBus, StreamBusOptions,
+    ClaimedMessage, ErrorObserver, ErrorScope, FetchedEntry, StreamBackend, StreamBus,
+    StreamBusOptions,
 };
 use eventbus_core::{
     AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PartialDeliveryState,
     PublishOptions,
 };
+use eventbus_memory::MemoryStreamBackend;
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{sleep, timeout};
 

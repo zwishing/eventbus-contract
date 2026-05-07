@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 
-use crate::error::EventBusError;
+use eventbus_core::EventBusError;
 
 #[derive(Debug, Clone)]
 pub struct Notification {

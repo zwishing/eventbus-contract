@@ -7,10 +7,8 @@ use std::{
 use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, Notify};
 
-use crate::{
-    stream::backend::{ClaimedMessage, FetchedEntry, StreamBackend},
-    EventBusError, Message, PartialDeliveryState,
-};
+use eventbus_core::stream::{ClaimedMessage, FetchedEntry, StreamBackend};
+use eventbus_core::{EventBusError, Message, PartialDeliveryState};
 
 /// In-process stream backend.
 ///
@@ -21,8 +19,8 @@ use crate::{
 /// deliberate: it makes the memory backend a deterministic reference for
 /// correctness tests, but it is **not representative of production
 /// throughput** and must not be used for benchmarking the `StreamBus`
-/// concurrency model. Use [`crate::stream::RedisBackend`] (behind the
-/// `redis-backend` feature) for any performance-oriented workload.
+/// concurrency model. Use [`eventbus_redis::RedisBackend`] (behind the
+/// `redis` feature on the facade) for any performance-oriented workload.
 #[derive(Debug, Default)]
 pub struct MemoryStreamBackend {
     state: Mutex<MemoryState>,

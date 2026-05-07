@@ -6,11 +6,12 @@
 
 use std::sync::Arc;
 
-use eventbus_core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
+use eventbus_core::stream::{StreamBus, StreamBusOptions};
 use eventbus_core::{
     BackpressurePolicy, BoxFuture, ConsumerBalanceMode, ConsumerGroup, DeliveryHandle,
     EventBusError, Handler, OverflowStrategy, SubscriberExt, SubscriptionConfig, Topic,
 };
+use eventbus_memory::MemoryStreamBackend;
 
 #[test]
 fn build_rejects_when_dependent_field_invalid() {

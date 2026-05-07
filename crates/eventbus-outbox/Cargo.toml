@@ -9,4 +9,6 @@ description = "Outbox + Dispatcher + DeadLetterStore traits"
 
 [dependencies]
 eventbus-core = { path = "../eventbus-core", version = "0.2.0" }
+bytes.workspace = true
 chrono.workspace = true
+serde.workspace = true

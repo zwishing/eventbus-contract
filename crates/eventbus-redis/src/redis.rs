@@ -38,10 +38,10 @@ use redis::streams::{StreamId, StreamRangeReply, StreamReadReply};
 use redis::{FromRedisValue, Value};
 
 use crate::codec::JsonCodec;
-use crate::{Codec, EventBusError, Message, PartialDeliveryState, HEADER_RETRY_ATTEMPT};
-
-use crate::stream::backend::{ClaimedMessage, FetchedEntry, StreamBackend};
-use crate::stream::bus::{StreamBus, StreamBusOptions};
+use eventbus_core::stream::{
+    ClaimedMessage, FetchedEntry, StreamBackend, StreamBus, StreamBusOptions,
+};
+use eventbus_core::{Codec, EventBusError, Message, PartialDeliveryState, HEADER_RETRY_ATTEMPT};
 
 const REDIS_FIELD_MESSAGE: &str = "message";
 
@@ -64,14 +64,15 @@ const MAX_RAW_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 ///
 /// ```rust,no_run
 /// use std::sync::Arc;
-/// use eventbus_core::stream::{RedisBackend, StreamBus, StreamBusOptions};
+/// use eventbus_core::stream::{StreamBus, StreamBusOptions};
+/// use eventbus_redis::{stream_bus_from_connection, RedisBackend};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = redis::Client::open("redis://127.0.0.1/")?;
 /// let conn = client.get_multiplexed_async_connection().await?;
 ///
 /// // Option A: via convenience constructor (uses JsonCodec).
-/// let bus = StreamBus::from_connection(conn.clone(), StreamBusOptions::default())?;
+/// let bus = stream_bus_from_connection(conn.clone(), StreamBusOptions::default())?;
 ///
 /// // Option B: explicit backend construction.
 /// let backend = Arc::new(RedisBackend::new(conn));
@@ -118,20 +119,18 @@ impl RedisBackend {
 }
 
 // ---------------------------------------------------------------------------
-// Convenience constructor on StreamBus
+// Convenience constructor
 // ---------------------------------------------------------------------------
 
-impl StreamBus<RedisBackend> {
-    /// Create a bus backed by a real Redis connection.
-    ///
-    /// This is shorthand for wrapping the connection in a [`RedisBackend`] and
-    /// calling [`StreamBus::new`].
-    pub fn from_connection(
-        conn: MultiplexedConnection,
-        options: StreamBusOptions,
-    ) -> Result<Self, EventBusError> {
-        Self::new(Arc::new(RedisBackend::new(conn)), options)
-    }
+/// Create a [`StreamBus`] backed by a real Redis connection.
+///
+/// Shorthand for wrapping the connection in a [`RedisBackend`] (with the
+/// default [`JsonCodec`]) and calling [`StreamBus::new`].
+pub fn stream_bus_from_connection(
+    conn: MultiplexedConnection,
+    options: StreamBusOptions,
+) -> Result<StreamBus<RedisBackend>, EventBusError> {
+    StreamBus::new(Arc::new(RedisBackend::new(conn)), options)
 }
 
 // ---------------------------------------------------------------------------
@@ -508,7 +507,7 @@ mod tests {
         let bytes = codec
             .encode(&Message {
                 uid: "msg-1".into(),
-                topic: crate::Topic::new("orders.created").expect("topic"),
+                topic: eventbus_core::Topic::new("orders.created").expect("topic"),
                 key: "order-1".into(),
                 kind: "orders.created".into(),
                 source: "tests".into(),

@@ -19,11 +19,12 @@ use std::sync::{
 use std::time::Duration;
 
 use chrono::Utc;
-use eventbus_core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
+use eventbus_core::stream::{StreamBus, StreamBusOptions};
 use eventbus_core::{
     AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
     SubscriptionConfig,
 };
+use eventbus_memory::MemoryStreamBackend;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
