@@ -12,3 +12,7 @@ eventbus-core = { path = "../eventbus-core", version = "0.2.0" }
 bytes.workspace = true
 chrono.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+chrono = { workspace = true, features = ["serde"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

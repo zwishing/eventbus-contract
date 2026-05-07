@@ -6,7 +6,7 @@ members = [
     "crates/eventbus-redis",
     "crates/eventbus-outbox",
     "crates/eventbus-integration",
-    "crates/eventbus",
+    "crates/eventbus-contract",
 ]
 
 [workspace.package]

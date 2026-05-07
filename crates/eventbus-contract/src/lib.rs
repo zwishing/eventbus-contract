@@ -1,5 +1,5 @@
-//! `eventbus` — facade crate that re-exports the contract traits, value
-//! types, backends, and helpers behind feature flags.
+//! `eventbus-contract` — facade crate that re-exports the contract traits,
+//! value types, backends, and helpers behind feature flags.
 //!
 //! Use [`prelude`] for the common imports, then pick a backend via features:
 //!
@@ -15,7 +15,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! eventbus = { version = "0.2", features = ["redis", "outbox"] }
+//! eventbus-contract = { version = "0.2", features = ["redis", "outbox"] }
 //! ```
 //!
 //! See [`MIGRATION-0.2.md`](https://github.com/zwishing/eventbus-contract/blob/main/MIGRATION-0.2.md)
@@ -38,8 +38,11 @@ pub use eventbus_integration as integration;
 pub mod prelude {
     //! Common imports for users of the event bus.
     pub use eventbus_core::{
-        Bus, Codec, ConsumerGroup, ConsumerName, Delivery, DeliveryGuarantee, EventBusError,
-        Handler, Message, PublishOptions, Publisher, Subscriber, Subscription, SubscriptionConfig,
+        AckMode, BackpressurePolicy, BatchOutcome, BoxFuture, BoxedError, Bus, Codec,
+        ConsumerBalanceMode, ConsumerGroup, ConsumerName, Delivery, DeliveryControl,
+        DeliveryGuarantee, DeliveryHandle, DeliveryState, EventBusError, Handler, Message,
+        MessageId, OrderingMode, OverflowStrategy, PublishConfirmation, PublishOptions, Publisher,
+        PublisherExt, Subscriber, SubscriberExt, Subscription, SubscriptionConfig,
         SubscriptionConfigBuilder, Topic,
     };
 }
