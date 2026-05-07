@@ -7,8 +7,8 @@ Breaking refactor. See [`MIGRATION-0.2.md`](./MIGRATION-0.2.md).
 ### Architecture
 
 - Workspace split: `eventbus-core` + `eventbus-memory` + `eventbus-redis`
-  + `eventbus-outbox` + `eventbus-integration` + `eventbus` (facade).
-- Single-crate users should depend on `eventbus` and pick backends via
+  + `eventbus-outbox` + `eventbus-integration` + `eventbus-contract` (facade).
+- Single-crate users should depend on `eventbus-contract` and pick backends via
   feature flags (`memory`, `redis`, `outbox`, `integration`, `tracing`).
 
 ### Public API — breaking

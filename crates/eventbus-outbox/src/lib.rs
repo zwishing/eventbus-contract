@@ -10,7 +10,7 @@
 //! - [`DeadLetterStore`] / [`DeadLetterPolicy`] — exhausted-retry routing.
 //! - [`Dispatcher`] / [`Notifier`] / [`Listener`] — outbox-relay worker traits.
 //!
-//! Enable via `eventbus = { version = "0.2", features = ["outbox"] }`.
+//! Enable via `eventbus-contract = { version = "0.2", features = ["outbox"] }`.
 
 pub mod dispatcher;
 pub mod outbox;
