@@ -1,15 +1,15 @@
-# eventbus
+# eventbus-contract
 
 Object-safe event-bus contract for Rust, with a Redis Streams backend and an
 in-process backend for tests.
 
 ```toml
 [dependencies]
-eventbus = { version = "0.2", features = ["redis", "outbox"] }
+eventbus-contract = { version = "0.2", features = ["redis", "outbox"] }
 ```
 
 ```rust
-use eventbus::prelude::*;
+use eventbus_contract::prelude::*;
 ```
 
 ## Workspace layout
@@ -21,7 +21,7 @@ use eventbus::prelude::*;
 | `eventbus-redis` | Production `RedisBackend` over `XADD` / `XREADGROUP` / `XACK` / `XAUTOCLAIM`. |
 | `eventbus-outbox` | Transactional outbox + dispatcher + dead-letter store traits. |
 | `eventbus-integration` | DDD integration-event helpers (`IntegrationEvent`, `MessageFactory`, `EventPublisher`). |
-| `eventbus` | Facade — re-exports everything behind feature flags. |
+| `eventbus-contract` | Facade — re-exports everything behind feature flags. |
 
 ## Features (facade)
 
@@ -35,8 +35,8 @@ use eventbus::prelude::*;
 
 ```rust
 use std::sync::Arc;
-use eventbus::core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
-use eventbus::prelude::*;
+use eventbus_contract::core::stream::{MemoryStreamBackend, StreamBus, StreamBusOptions};
+use eventbus_contract::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), EventBusError> {
@@ -45,8 +45,8 @@ async fn main() -> Result<(), EventBusError> {
 
     struct Echo;
     impl Handler for Echo {
-        fn handle(&self, d: Box<dyn eventbus::core::DeliveryHandle>)
-            -> eventbus::core::BoxFuture<'_, Result<(), EventBusError>>
+        fn handle(&self, d: Box<dyn eventbus_contract::core::DeliveryHandle>)
+            -> eventbus_contract::core::BoxFuture<'_, Result<(), EventBusError>>
         {
             Box::pin(async move { d.ack().await })
         }

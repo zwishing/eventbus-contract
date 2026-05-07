@@ -1,6 +1,10 @@
-# Migrating from `eventbus-contract` 0.1 to `eventbus` 0.2
+# Migrating from `eventbus-contract` 0.1 to `eventbus-contract` 0.2
 
-## Crate rename + workspace split
+## Workspace split
+
+The `eventbus-contract` crate is now a thin facade re-exporting from a
+workspace of contract + backend + helper crates. The crate name is
+unchanged; the version bump is `0.1 → 0.2` (breaking).
 
 ```toml
 # Before (0.1)
@@ -9,7 +13,7 @@ eventbus-contract = "0.1"
 
 # After (0.2) — facade crate
 [dependencies]
-eventbus = { version = "0.2", features = ["redis", "outbox"] }
+eventbus-contract = { version = "0.2", features = ["redis", "outbox"] }
 ```
 
 ```rust
@@ -17,7 +21,7 @@ eventbus = { version = "0.2", features = ["redis", "outbox"] }
 use eventbus_contract::{Bus, Publisher, /* ... */};
 
 // After
-use eventbus::prelude::*;
+use eventbus_contract::prelude::*;
 ```
 
 The single `eventbus-contract` crate is now a workspace:
@@ -29,7 +33,7 @@ The single `eventbus-contract` crate is now a workspace:
 | `eventbus-redis` | Redis Streams backend |
 | `eventbus-outbox` | Transactional outbox + dispatcher helpers |
 | `eventbus-integration` | DDD integration-event surface |
-| `eventbus` | Facade — re-exports the above behind feature flags |
+| `eventbus-contract` | Facade — re-exports the above behind feature flags |
 
 ## Handler signature
 
@@ -125,7 +129,7 @@ if !outcome.all_ok() {
 Iterator-friendly form via the monomorphic extension trait:
 
 ```rust
-use eventbus::prelude::*;
+use eventbus_contract::prelude::*;
 use eventbus_core::PublisherExt;
 let outcome = bus.publish_iter(msgs_iter, opts).await?;
 ```
@@ -134,10 +138,10 @@ let outcome = bus.publish_iter(msgs_iter, opts).await?;
 
 ```toml
 # Default-on under the eventbus facade
-eventbus = { version = "0.2" }
+eventbus-contract = { version = "0.2" }
 
 # To exclude the in-process backend (typical production)
-eventbus = { version = "0.2", default-features = false, features = ["redis"] }
+eventbus-contract = { version = "0.2", default-features = false, features = ["redis"] }
 ```
 
 ## Subscription lifecycle
@@ -176,5 +180,5 @@ trait ErrorObserver {
 
 ```toml
 # Tracing instrumentation
-eventbus = { version = "0.2", features = ["tracing"] }
+eventbus-contract = { version = "0.2", features = ["tracing"] }
 ```

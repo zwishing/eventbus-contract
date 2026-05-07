@@ -9,7 +9,7 @@
 //! - [`EventPublisher`] — thin wrapper around [`eventbus_core::Publisher`]
 //!   that accepts integration events directly.
 //!
-//! Enable via `eventbus = { version = "0.2", features = ["integration"] }`.
+//! Enable via `eventbus-contract = { version = "0.2", features = ["integration"] }`.
 
 pub mod integration;
 
