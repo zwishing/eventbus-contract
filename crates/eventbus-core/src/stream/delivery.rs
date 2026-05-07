@@ -72,13 +72,15 @@ impl<B: StreamBackend> StreamDelivery<B> {
     }
 
     async fn publish_dead_letter(&self, reason: &str) -> Result<(), EventBusError> {
-        if let Some(dead_letter_topic) = self.config.dead_letter_topic.as_deref() {
+        if let Some(dead_letter_topic) = self.config.dead_letter_topic().cloned() {
             let mut dead_letter = Message::clone(&self.message);
-            dead_letter.topic = dead_letter_topic.to_string();
+            dead_letter.topic = dead_letter_topic.clone();
             dead_letter
                 .headers
                 .insert(HEADER_DEAD_LETTER_REASON.to_string(), reason.to_string());
-            self.backend.publish(dead_letter_topic, dead_letter).await?;
+            self.backend
+                .publish(dead_letter_topic.as_str(), dead_letter)
+                .await?;
         }
 
         Ok(())
@@ -130,10 +132,12 @@ impl<B: StreamBackend> DeliveryControl for StreamDelivery<B> {
             let reason_str = reason.to_string();
 
             if retry_exhausted {
-                if self.config.dead_letter_topic.is_none() {
+                if self.config.dead_letter_topic().is_none() {
                     return Err(EventBusError::Validation(format!(
                         "retry exhausted ({}/{}) but no dead_letter_topic configured for topic {}",
-                        self.state.attempt, self.state.max_attempt, self.config.topic,
+                        self.state.attempt,
+                        self.state.max_attempt,
+                        self.config.topic().as_str(),
                     )));
                 }
                 self.publish_dead_letter(&reason_str).await?;
@@ -147,7 +151,9 @@ impl<B: StreamBackend> DeliveryControl for StreamDelivery<B> {
                     .headers
                     .insert(HEADER_RETRY_REASON.to_string(), reason_str);
 
-                self.backend.publish(&self.config.topic, retried).await?;
+                self.backend
+                    .publish(self.config.topic().as_str(), retried)
+                    .await?;
             }
             self.mark_acked().await
         })

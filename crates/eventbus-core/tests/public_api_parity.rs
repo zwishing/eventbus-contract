@@ -11,7 +11,7 @@ use eventbus_core::{
 
 #[test]
 fn root_exports_go_parity_contracts() {
-    let _topic: Topic = "orders.created".to_string();
+    let _topic: Topic = Topic::new("orders.created").expect("topic");
     let _headers = Headers::default();
 
     let matrix = GuaranteeMatrix {
@@ -188,7 +188,7 @@ fn assert_delivery_inspector<T: DeliveryInspector>() {}
 fn message_with_headers(headers: Headers) -> Message {
     Message {
         uid: "msg-1".into(),
-        topic: "orders.created".into(),
+        topic: eventbus_core::Topic::new("orders.created").expect("topic"),
         key: "order-1".into(),
         kind: "orders.created".into(),
         source: "tests".into(),
