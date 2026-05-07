@@ -295,6 +295,7 @@ impl<B: StreamBackend> StreamBus<B> {
         self.subscribe_inner(cfg, Arc::new(handler)).await
     }
 
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, message, options), fields(topic = %message.topic)))]
     async fn publish_inner(
         &self,
         message: Message,
@@ -309,10 +310,11 @@ impl<B: StreamBackend> StreamBus<B> {
         let message = Self::prepare_message(message, options, self.options.max_payload_bytes)?;
 
         let topic = message.topic.clone();
-        let id = self.backend.publish(&topic, message).await?;
+        let id = self.backend.publish(topic.as_str(), message).await?;
         Ok(MessageId::new(id))
     }
 
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self, msgs, opts), fields(count = msgs.len())))]
     async fn publish_batch_impl(
         &self,
         msgs: Vec<Message>,
@@ -325,64 +327,72 @@ impl<B: StreamBackend> StreamBus<B> {
         }
 
         let max_payload_bytes = self.options.max_payload_bytes;
-        let prepared_messages = msgs
+        let prepared: Vec<(usize, Result<Message, EventBusError>)> = msgs
             .into_iter()
-            .map(|message| Self::prepare_message(message, &opts, max_payload_bytes))
-            .collect::<Result<Vec<_>, _>>()?;
+            .enumerate()
+            .map(|(idx, m)| (idx, Self::prepare_message(m, &opts, max_payload_bytes)))
+            .collect();
 
-        let parallelism = prepared_messages
-            .len()
-            .clamp(1, self.options.publish_batch_parallelism);
-        let mut pending = prepared_messages.into_iter();
-        let mut tasks = JoinSet::new();
-        let mut first_error: Option<EventBusError> = None;
-        let mut ids: Vec<MessageId> = Vec::new();
+        let total = prepared.len();
+        let parallelism = total.clamp(1, self.options.publish_batch_parallelism);
+        let mut iter = prepared.into_iter();
+        let mut tasks: JoinSet<(usize, Result<MessageId, EventBusError>)> = JoinSet::new();
+        let mut results: Vec<Option<Result<MessageId, EventBusError>>> =
+            std::iter::repeat_with(|| None).take(total).collect();
 
         for _ in 0..parallelism {
-            let Some(message) = pending.next() else {
-                break;
+            if let Some((idx, prep)) = iter.next() {
+                let backend = Arc::clone(&self.backend);
+                tasks.spawn(async move {
+                    let r = match prep {
+                        Err(e) => Err(e),
+                        Ok(m) => {
+                            let topic = m.topic.clone();
+                            backend.publish(topic.as_str(), m).await.map(MessageId::new)
+                        }
+                    };
+                    (idx, r)
+                });
+            }
+        }
+
+        while let Some(joined) = tasks.join_next().await {
+            let (idx, r) = match joined {
+                Ok(p) => p,
+                Err(je) => {
+                    let idx = results.iter().position(Option::is_none).unwrap_or(0);
+                    (idx, Err(EventBusError::source("publish task panicked", je)))
+                }
             };
-            let backend = Arc::clone(&self.backend);
-            tasks.spawn(async move {
-                let topic = message.topic.clone();
-                backend.publish(&topic, message).await.map(MessageId::new)
-            });
-        }
-
-        while let Some(result) = tasks.join_next().await {
-            match result {
-                Ok(Ok(id)) => ids.push(id),
-                Ok(Err(err)) => {
-                    if first_error.is_none() {
-                        first_error = Some(err);
-                    }
-                }
-                Err(err) => {
-                    if first_error.is_none() {
-                        first_error = Some(EventBusError::Internal(format!(
-                            "publish batch task failed: {err}"
-                        )));
-                    }
-                }
+            if idx < results.len() {
+                results[idx] = Some(r);
             }
-
-            if first_error.is_none() {
-                if let Some(message) = pending.next() {
-                    let backend = Arc::clone(&self.backend);
-                    tasks.spawn(async move {
-                        let topic = message.topic.clone();
-                        backend.publish(&topic, message).await.map(MessageId::new)
-                    });
-                }
+            if let Some((next_idx, prep)) = iter.next() {
+                let backend = Arc::clone(&self.backend);
+                tasks.spawn(async move {
+                    let r = match prep {
+                        Err(e) => Err(e),
+                        Ok(m) => {
+                            let topic = m.topic.clone();
+                            backend.publish(topic.as_str(), m).await.map(MessageId::new)
+                        }
+                    };
+                    (next_idx, r)
+                });
             }
-        }
-
-        if let Some(err) = first_error {
-            return Err(err);
         }
 
         Ok(BatchOutcome {
-            results: ids.into_iter().map(Ok).collect(),
+            results: results
+                .into_iter()
+                .map(|o| {
+                    o.unwrap_or_else(|| {
+                        Err(EventBusError::Internal(
+                            "publish_batch slot never filled".into(),
+                        ))
+                    })
+                })
+                .collect(),
         })
     }
 
@@ -391,8 +401,7 @@ impl<B: StreamBackend> StreamBus<B> {
         options: &PublishOptions,
         max_payload_bytes: usize,
     ) -> Result<Message, EventBusError> {
-        validate_topic(&message.topic)?;
-
+        // Topic was validated at `Topic::new` construction; nothing to do here.
         if max_payload_bytes > 0 && message.payload.len() > max_payload_bytes {
             return Err(EventBusError::Validation(format!(
                 "message payload {} bytes exceeds max_payload_bytes {}",
@@ -412,6 +421,16 @@ impl<B: StreamBackend> StreamBus<B> {
         Ok(message)
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip_all,
+            fields(
+                topic = %runtime.config.topic.as_str(),
+                group = %runtime.config.consumer_group.as_str()
+            )
+        )
+    )]
     async fn consume_loop(
         self,
         mut close_rx: watch::Receiver<bool>,
@@ -423,20 +442,37 @@ impl<B: StreamBackend> StreamBus<B> {
         let mut tasks = JoinSet::new();
         let mut first_delivery_error: Option<EventBusError> = None;
         let mut backoff = BackoffState::new(runtime.config.retry_backoff);
+        let observer = self.options.error_observer.clone();
 
         loop {
             if *close_rx.borrow() {
                 break;
             }
 
-            drain_completed_tasks(&mut tasks, &mut first_delivery_error)?;
+            drain_completed_tasks(&mut tasks, observer.as_ref(), &mut first_delivery_error)?;
 
-            let available = runtime.limiter.available_permits();
-            if available == 0 {
+            // Acquire permits BEFORE fetching from the backend. This eliminates
+            // the TOCTOU race where reclaim could push entries between our
+            // `available_permits()` snapshot and the backend read.
+            let max_batch = runtime
+                .config
+                .backpressure
+                .as_ref()
+                .map_or(usize::MAX, |p| p.max_batch_size.max(1));
+            let mut permits: Vec<OwnedSemaphorePermit> = Vec::new();
+            while permits.len() < max_batch {
+                match Arc::clone(&runtime.limiter).try_acquire_owned() {
+                    Ok(p) => permits.push(p),
+                    Err(_) => break,
+                }
+            }
+
+            if permits.is_empty() {
                 if !wait_for_task_or_close(
                     &mut tasks,
                     &mut close_rx,
                     backoff.peek(),
+                    observer.as_ref(),
                     &mut first_delivery_error,
                 )
                 .await
@@ -446,17 +482,11 @@ impl<B: StreamBackend> StreamBus<B> {
                 continue;
             }
 
-            let read_limit = runtime
-                .config
-                .backpressure
-                .as_ref()
-                .map_or(available, |policy| policy.max_batch_size.max(1))
-                .min(available);
-
+            let read_limit = permits.len();
             let read_future = self.backend.read_new(
-                &runtime.config.topic,
-                &runtime.config.consumer_group,
-                &runtime.config.consumer_name,
+                runtime.config.topic.as_str(),
+                runtime.config.consumer_group.as_str(),
+                runtime.config.consumer_name.as_str(),
                 read_limit,
                 self.options.block_timeout,
             );
@@ -473,26 +503,28 @@ impl<B: StreamBackend> StreamBus<B> {
                     if changed.is_ok() && *close_rx.borrow() {
                         break;
                     }
+                    // permits drop here, returning slots to the limiter
                     continue;
                 }
                 Some(reclaimed) = reclaim_rx.recv() => {
                     if !reclaimed.is_empty() {
                         any_work = true;
-                        self.spawn_messages(&mut tasks, reclaimed, &runtime).await?;
+                        self.spawn_messages(&mut tasks, reclaimed, &mut permits, &runtime).await?;
                     }
                 }
                 result = &mut read_future => {
                     match result {
                         Ok(messages) if !messages.is_empty() => {
                             any_work = true;
-                            self.spawn_messages(&mut tasks, messages, &runtime).await?;
+                            self.spawn_messages(&mut tasks, messages, &mut permits, &runtime).await?;
                         }
                         Ok(_) => {}
                         Err(err) => {
-                            if let Some(obs) = self.options.error_observer.as_ref() {
+                            if let Some(obs) = observer.as_ref() {
                                 obs.on_error(ErrorScope::Read, &err);
                             }
                             let sleep_dur = backoff.next();
+                            // permits drop at end of iteration
                             if !sleep_or_close(&mut close_rx, sleep_dur).await {
                                 break;
                             }
@@ -501,6 +533,8 @@ impl<B: StreamBackend> StreamBus<B> {
                     }
                 }
             }
+
+            // Any permits left in `permits` drop here — slots return to the limiter.
 
             if any_work {
                 backoff.reset();
@@ -515,8 +549,11 @@ impl<B: StreamBackend> StreamBus<B> {
                     first_delivery_error.get_or_insert(err);
                 }
                 Err(err) => {
+                    if let Some(obs) = observer.as_ref() {
+                        obs.on_panic(ErrorScope::HandlerPanic, &err.to_string());
+                    }
                     first_delivery_error.get_or_insert_with(|| {
-                        EventBusError::Internal(format!("delivery task panicked: {err}"))
+                        EventBusError::source("delivery task panicked", err)
                     });
                 }
             }
@@ -535,7 +572,7 @@ impl<B: StreamBackend> StreamBus<B> {
         let _ = flusher_handle.await;
 
         self.backend
-            .forget_consumer(&topic, &group, &consumer)
+            .forget_consumer(topic.as_str(), group.as_str(), consumer.as_str())
             .await;
 
         if let Some(err) = first_delivery_error {
@@ -549,26 +586,21 @@ impl<B: StreamBackend> StreamBus<B> {
         &self,
         tasks: &mut JoinSet<DeliveryTaskResult>,
         entries: Vec<FetchedEntry>,
+        permits: &mut Vec<OwnedSemaphorePermit>,
         runtime: &RuntimeState,
     ) -> Result<(), EventBusError> {
-        // The caller (`consume_loop` / `reclaim_rx`) sized this batch against
-        // a snapshot of `available_permits()`, and nothing else acquires from
-        // this limiter — so `try_acquire_owned` should always succeed. We use
-        // it instead of `acquire_owned().await` to:
-        //   1. avoid blocking the loop on permit acquisition (preserves close
-        //      / reclaim responsiveness if the architecture ever grows another
-        //      consumer of the limiter), and
-        //   2. surface a loud `Internal` error if the invariant is ever
-        //      regressed in the future, instead of silently deadlocking.
+        // Permits are pre-acquired by the consume loop (one per anticipated
+        // delivery). The reclaim path may, however, deliver more entries than
+        // we have permits for; in that case we stop dispatching the surplus —
+        // those entries stay in the backend's pending list and the reclaim
+        // task will pick them up on the next cycle.
         for entry in entries {
             match entry {
                 FetchedEntry::Decoded(claimed) => {
-                    let permit = runtime.limiter.clone().try_acquire_owned().map_err(|err| {
-                        EventBusError::Internal(format!(
-                            "in-flight limiter exhausted unexpectedly while spawning \
-                                 delivery: {err}"
-                        ))
-                    })?;
+                    let Some(permit) = permits.pop() else {
+                        // Out of permits — leave the rest in PEL for reclaim.
+                        break;
+                    };
                     let bus = self.clone();
                     let config = Arc::clone(&runtime.config);
                     let handler = Arc::clone(&runtime.handler);
@@ -601,15 +633,15 @@ impl<B: StreamBackend> StreamBus<B> {
             obs.on_error(ErrorScope::Read, &error);
         }
 
-        if let Some(dlq) = config.dead_letter_topic.as_deref() {
+        if let Some(dlq) = config.dead_letter_topic.as_ref() {
             let mut headers = std::collections::HashMap::new();
             headers.insert(HEADER_DEAD_LETTER_REASON.to_string(), error.to_string());
             let envelope = Message {
                 uid: format!("malformed-{id}"),
-                topic: dlq.to_string(),
+                topic: dlq.clone(),
                 key: id.clone(),
                 kind: "eventbus.malformed".into(),
-                source: config.topic.clone(),
+                source: config.topic.as_str().to_string(),
                 occurred_at: Utc::now(),
                 headers,
                 payload: bytes::Bytes::new(),
@@ -620,7 +652,7 @@ impl<B: StreamBackend> StreamBus<B> {
                 trace_uid: None,
                 correlation_uid: None,
             };
-            if let Err(err) = self.backend.publish(dlq, envelope).await {
+            if let Err(err) = self.backend.publish(dlq.as_str(), envelope).await {
                 if let Some(obs) = self.options.error_observer.as_ref() {
                     obs.on_error(ErrorScope::Read, &err);
                 }
@@ -631,7 +663,7 @@ impl<B: StreamBackend> StreamBus<B> {
 
         if let Err(err) = self
             .backend
-            .ack(&config.topic, &config.consumer_group, &id)
+            .ack(config.topic.as_str(), config.consumer_group.as_str(), &id)
             .await
         {
             if let Some(obs) = self.options.error_observer.as_ref() {
@@ -640,6 +672,13 @@ impl<B: StreamBackend> StreamBus<B> {
         }
     }
 
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            skip(self, config, handler, claimed, permit, ack_tx),
+            fields(message_id = %claimed.id)
+        )
+    )]
     async fn process_single_message(
         &self,
         config: Arc<SubscriptionConfig>,
@@ -771,18 +810,12 @@ impl<B: StreamBackend> StreamBus<B> {
         mut cfg: SubscriptionConfig,
         handler: Arc<dyn Handler>,
     ) -> Result<StreamSubscription, EventBusError> {
-        validate_topic(&cfg.topic)?;
-        if cfg.consumer_group.trim().is_empty() {
-            return Err(EventBusError::Validation(
-                "consumer group is required".into(),
-            ));
-        }
-        if cfg.consumer_name.trim().is_empty() {
-            // Append a random suffix because nanosecond resolution is not
-            // unique under container co-launch or clock skew/regression.
-            let nanos = Utc::now().timestamp_nanos_opt().unwrap_or_default();
-            let entropy: u64 = rand::thread_rng().gen();
-            cfg.consumer_name = format!("consumer-{nanos}-{entropy:016x}");
+        // Topic / group / name are newtypes (validated at construction).
+        // Defensive normalize_and_validate in case the caller hand-built the
+        // config bypassing the builder.
+        if cfg.consumer_name.as_str().trim().is_empty() {
+            // Replace blank consumer-name with a unique auto-generated one.
+            cfg.consumer_name = crate::ConsumerName::auto();
         }
 
         cfg.normalize_and_validate()?;
@@ -795,8 +828,8 @@ impl<B: StreamBackend> StreamBus<B> {
 
         self.backend
             .create_group(
-                &cfg.topic,
-                &cfg.consumer_group,
+                cfg.topic.as_str(),
+                cfg.consumer_group.as_str(),
                 &self.options.group_start_id,
             )
             .await?;
@@ -811,10 +844,10 @@ impl<B: StreamBackend> StreamBus<B> {
         // through ack flush, so `max_in_flight` already bounds the
         // handler+pending-ack pipeline.
         let limit = cfg.max_in_flight.max(1);
-        let consumer_name = cfg.consumer_name.clone();
+        let consumer_name = cfg.consumer_name.as_str().to_string();
 
-        let stream = cfg.topic.clone();
-        let group = cfg.consumer_group.clone();
+        let stream = cfg.topic.as_str().to_string();
+        let group = cfg.consumer_group.as_str().to_string();
         let (ack_tx, flusher_handle) = ack_flusher::spawn(
             Arc::clone(&self.backend),
             stream,
@@ -832,11 +865,10 @@ impl<B: StreamBackend> StreamBus<B> {
             let args = ReclaimLoopArgs {
                 backend: Arc::clone(&self.backend),
                 close_rx: close_rx.clone(),
-                limiter: Arc::clone(&limiter),
                 reclaim_tx,
-                topic: cfg.topic.clone(),
-                group: cfg.consumer_group.clone(),
-                consumer: cfg.consumer_name.clone(),
+                topic: cfg.topic.as_str().to_string(),
+                group: cfg.consumer_group.as_str().to_string(),
+                consumer: cfg.consumer_name.as_str().to_string(),
                 claim_idle_timeout: self.options.claim_idle_timeout,
                 claim_scan_batch_size: self.options.claim_scan_batch_size,
                 reclaim_interval: self.options.reclaim_interval,
@@ -869,7 +901,12 @@ impl<B: StreamBackend> StreamBus<B> {
 
         drop(runtime);
 
-        Ok(StreamSubscription::new(consumer_name, close_tx, task))
+        Ok(StreamSubscription::new(
+            consumer_name,
+            close_tx,
+            task,
+            self.options.error_observer.clone(),
+        ))
     }
 }
 
@@ -893,7 +930,6 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
 struct ReclaimLoopArgs<B: StreamBackend> {
     backend: SharedBackend<B>,
     close_rx: watch::Receiver<bool>,
-    limiter: Arc<Semaphore>,
     reclaim_tx: mpsc::Sender<Vec<FetchedEntry>>,
     topic: String,
     group: String,
@@ -908,7 +944,6 @@ async fn reclaim_loop<B: StreamBackend>(args: ReclaimLoopArgs<B>) {
     let ReclaimLoopArgs {
         backend,
         mut close_rx,
-        limiter,
         reclaim_tx,
         topic,
         group,
@@ -926,12 +961,11 @@ async fn reclaim_loop<B: StreamBackend>(args: ReclaimLoopArgs<B>) {
             break;
         }
 
-        let available = limiter.available_permits();
-        if available == 0 {
-            continue;
-        }
-
-        let count = available.min(claim_scan_batch_size);
+        // Reclaim no longer peeks at the limiter — the consume loop gates
+        // permits before dispatching, and surplus entries left here remain
+        // in PEL for the next cycle. Reclaim's own pacing is `reclaim_interval`
+        // plus `claim_scan_batch_size`.
+        let count = claim_scan_batch_size;
         match backend
             .reclaim_idle(&topic, &group, &consumer, claim_idle_timeout, count)
             .await
@@ -959,37 +993,10 @@ async fn reclaim_loop<B: StreamBackend>(args: ReclaimLoopArgs<B>) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Maximum allowed topic length (chars). Bounds the size of payloads / cursor
-/// keys / log lines downstream. 1 KiB is generous — real topics are short.
-const MAX_TOPIC_LEN: usize = 1024;
-
-/// Validate a topic name at the bus boundary (publish + subscribe).
-///
-/// Rejects empty / whitespace-only names, names longer than [`MAX_TOPIC_LEN`],
-/// and any string containing ASCII control characters. Backends that treat
-/// topic names as paths or queries (future work) can add their own further
-/// restrictions; this is the floor.
-fn validate_topic(topic: &str) -> Result<(), EventBusError> {
-    if topic.trim().is_empty() {
-        return Err(EventBusError::Validation("topic is required".into()));
-    }
-    if topic.len() > MAX_TOPIC_LEN {
-        return Err(EventBusError::Validation(format!(
-            "topic length {} exceeds limit of {MAX_TOPIC_LEN}",
-            topic.len()
-        )));
-    }
-    if topic.chars().any(|c| c.is_control()) {
-        return Err(EventBusError::Validation(
-            "topic must not contain control characters".into(),
-        ));
-    }
-    Ok(())
-}
-
 /// Drain synchronously-ready completed tasks without an executor roundtrip.
 fn drain_completed_tasks(
     tasks: &mut JoinSet<DeliveryTaskResult>,
+    observer: Option<&Arc<dyn ErrorObserver>>,
     first_delivery_error: &mut Option<EventBusError>,
 ) -> Result<(), EventBusError> {
     while let Some(result) = tasks.try_join_next() {
@@ -999,9 +1006,10 @@ fn drain_completed_tasks(
                 first_delivery_error.get_or_insert(err);
             }
             Err(err) => {
-                return Err(EventBusError::Internal(format!(
-                    "delivery task panicked: {err}"
-                )));
+                if let Some(obs) = observer {
+                    obs.on_panic(ErrorScope::HandlerPanic, &err.to_string());
+                }
+                return Err(EventBusError::source("delivery task panicked", err));
             }
         }
     }
@@ -1064,6 +1072,7 @@ async fn wait_for_task_or_close(
     tasks: &mut JoinSet<DeliveryTaskResult>,
     close_rx: &mut watch::Receiver<bool>,
     duration: Duration,
+    observer: Option<&Arc<dyn ErrorObserver>>,
     first_delivery_error: &mut Option<EventBusError>,
 ) -> bool {
     if tasks.is_empty() {
@@ -1085,8 +1094,11 @@ async fn wait_for_task_or_close(
                 true
             }
             Some(Err(err)) => {
+                if let Some(obs) = observer {
+                    obs.on_panic(ErrorScope::HandlerPanic, &err.to_string());
+                }
                 first_delivery_error.get_or_insert_with(|| {
-                    EventBusError::Internal(format!("delivery task failed: {err}"))
+                    EventBusError::source("delivery task failed", err)
                 });
                 true
             }

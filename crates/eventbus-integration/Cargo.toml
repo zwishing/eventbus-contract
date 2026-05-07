@@ -8,4 +8,4 @@ rust-version.workspace = true
 description = "DDD integration-event helpers atop eventbus-core"
 
 [dependencies]
-eventbus-core = { path = "../eventbus-core", version = "0.2.0-alpha.1" }
+eventbus-core = { path = "../eventbus-core", version = "0.2.0" }

@@ -166,7 +166,7 @@ mod tests {
     fn test_message() -> Message {
         Message {
             uid: "test-uid".into(),
-            topic: "test.topic".into(),
+            topic: crate::Topic::new("test.topic").expect("topic"),
             key: "key".into(),
             kind: "test.kind".into(),
             source: "test".into(),

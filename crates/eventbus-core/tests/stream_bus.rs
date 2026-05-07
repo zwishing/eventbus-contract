@@ -12,7 +12,7 @@ use eventbus_core::stream::{
 };
 use eventbus_core::{
     AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PartialDeliveryState,
-    PublishOptions, SubscriptionConfig,
+    PublishOptions,
 };
 use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{sleep, timeout};
@@ -20,7 +20,7 @@ use tokio::time::{sleep, timeout};
 fn message(topic: &str, uid: &str) -> Message {
     Message {
         uid: uid.to_string(),
-        topic: topic.to_string(),
+        topic: eventbus_core::Topic::new(topic).expect("topic"),
         key: String::new(),
         kind: "test.message".to_string(),
         source: "test".to_string(),
@@ -183,14 +183,15 @@ async fn publish_subscribe_auto_ack_drains_pending() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.user".to_string(),
-                consumer_group: "cg.auto-ack".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.user").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.auto-ack").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             AutoAckHandler { tx },
         )
         .await
@@ -228,14 +229,15 @@ async fn manual_ack_drains_pending() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.manual".to_string(),
-                consumer_group: "cg.manual".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.manual").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.manual").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             ManualAckHandler { tx },
         )
         .await
@@ -265,15 +267,16 @@ async fn retry_redelivers_message_and_then_drains_pending() {
     let (tx, mut rx) = mpsc::channel(4);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.retry".to_string(),
-                consumer_group: "cg.retry".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                max_retry: 5,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.retry").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.retry").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .max_retry(5)
+            .build()
+            .expect("build subscription config"),
             RetryOnceHandler {
                 attempts: attempts.clone(),
                 tx,
@@ -315,14 +318,15 @@ async fn reclaims_pending_from_inactive_consumer() {
     let (first_tx, mut first_rx) = mpsc::channel(1);
     let first_sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.reclaim".to_string(),
-                consumer_group: "cg.reclaim".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.reclaim").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.reclaim").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             ReceiveOnlyHandler { tx: first_tx },
         )
         .await
@@ -346,14 +350,15 @@ async fn reclaims_pending_from_inactive_consumer() {
     let (second_tx, mut second_rx) = mpsc::channel(1);
     let second_sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.reclaim".to_string(),
-                consumer_group: "cg.reclaim".to_string(),
-                consumer_name: "consumer-2".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.reclaim").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.reclaim").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-2").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             AckAndSignalHandler { tx: second_tx },
         )
         .await
@@ -376,15 +381,16 @@ async fn nack_routes_to_dead_letter_stream() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.nack".to_string(),
-                consumer_group: "cg.nack".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::Manual,
-                dead_letter_topic: Some("evt.nack.dlq".to_string()),
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.nack").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.nack").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .dead_letter_topic(eventbus_core::Topic::new("evt.nack.dlq").expect("dlq topic"))
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             NackHandler { tx },
         )
         .await
@@ -435,16 +441,17 @@ async fn retry_max_routes_to_dead_letter_stream() {
 
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.retry.max".to_string(),
-                consumer_group: "cg.retry.max".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::Manual,
-                dead_letter_topic: Some("evt.retry.max.dlq".to_string()),
-                max_in_flight: 1,
-                max_retry: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.retry.max").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.retry.max").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .dead_letter_topic(eventbus_core::Topic::new("evt.retry.max.dlq").expect("dlq topic"))
+            .max_in_flight(1)
+            .max_retry(1)
+            .build()
+            .expect("build subscription config"),
             RetryToDeadLetterHandler {
                 attempts: attempts.clone(),
                 result: result.clone(),
@@ -491,15 +498,16 @@ async fn manual_ack_handler_error_does_not_auto_retry() {
     let attempts = Arc::new(AtomicUsize::new(0));
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.manual.error".to_string(),
-                consumer_group: "cg.manual.error".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                max_retry: 5,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.manual.error").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.manual.error").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .max_retry(5)
+            .build()
+            .expect("build subscription config"),
             ErrorHandler {
                 attempts: attempts.clone(),
             },
@@ -547,14 +555,15 @@ async fn subscribe_generates_consumer_name_when_empty() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.generated-consumer".to_string(),
-                consumer_group: "cg.generated-consumer".to_string(),
-                consumer_name: String::new(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.generated-consumer").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.generated-consumer").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::auto())
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             AutoAckHandler { tx },
         )
         .await
@@ -585,14 +594,15 @@ async fn drop_subscription_stops_background_workers() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.drop".to_string(),
-                consumer_group: "cg.drop".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.drop").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.drop").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             AutoAckHandler { tx },
         )
         .await
@@ -645,15 +655,16 @@ async fn subscription_respects_max_in_flight_limit() {
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.max-in-flight".to_string(),
-                consumer_group: "cg.max-in-flight".to_string(),
-                consumer_name: "consumer".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                max_pending_acks: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.max-in-flight").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.max-in-flight").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .max_pending_acks(1)
+            .build()
+            .expect("build subscription config"),
             BlockingHandler {
                 started_tx,
                 release: release.clone(),
@@ -715,14 +726,15 @@ async fn group_start_id_zero_reads_existing_messages() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.from-zero".to_string(),
-                consumer_group: "cg.from-zero".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.from-zero").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.from-zero").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             AutoAckHandler { tx },
         )
         .await
@@ -738,22 +750,40 @@ async fn group_start_id_zero_reads_existing_messages() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn publish_batch_rejects_invalid_input_before_publishing_any_message() {
+async fn publish_batch_rejects_oversize_payload_before_publishing_any_message() {
+    // Topic invalidity is unreachable post-PR4 (Topic::new validates at
+    // construction). The remaining publish-time validation path is the
+    // payload-size check, exercised here.
+    //
+    // Post-PR5 semantics: `publish_batch` returns Ok(BatchOutcome) with one
+    // Result per input — a per-message validation failure is recorded in the
+    // outcome rather than aborting the whole batch.
     let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
+    let bus = StreamBus::new(
+        backend.clone(),
+        StreamBusOptions::default().with_max_payload_bytes(8),
+    )
+    .expect("construct bus");
 
-    let messages = vec![
-        message("evt.batch.atomic", "uid-valid"),
-        message("", "uid-invalid"),
-    ];
+    // Construct a small valid payload that fits inside the 8-byte cap.
+    let mut small = message("evt.batch.atomic", "uid-valid");
+    small.payload = bytes::Bytes::from_static(b"ok");
+    let mut oversize = message("evt.batch.atomic", "uid-invalid");
+    oversize.payload = bytes::Bytes::from_static(b"this payload is too large");
+    let messages = vec![small, oversize];
 
-    let err = bus
+    let outcome = bus
         .publish_batch(messages, PublishOptions::default())
         .await
-        .expect_err("batch validation should fail");
+        .expect("publish_batch returns BatchOutcome");
 
-    assert!(matches!(err, EventBusError::Validation(_)));
-    assert_eq!(backend.stream_len("evt.batch.atomic").await, 0);
+    assert_eq!(outcome.results.len(), 2);
+    assert!(outcome.results[0].is_ok(), "small message should succeed");
+    assert!(matches!(
+        outcome.results[1].as_ref().err(),
+        Some(EventBusError::Validation(_))
+    ));
+    assert_eq!(backend.stream_len("evt.batch.atomic").await, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -764,14 +794,15 @@ async fn publish_allows_empty_uid_to_match_go_parity() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.empty-uid".to_string(),
-                consumer_group: "cg.empty-uid".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.empty-uid").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.empty-uid").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             AutoAckHandler { tx },
         )
         .await
@@ -830,15 +861,16 @@ async fn reclaimed_messages_consume_in_flight_budget() {
     let release = Arc::new(Notify::new());
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.inflight-budget".to_string(),
-                consumer_group: "cg.inflight-budget".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                max_pending_acks: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.inflight-budget").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.inflight-budget").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .max_pending_acks(1)
+            .build()
+            .expect("build subscription config"),
             BlockingHandler {
                 started_tx,
                 release: Arc::clone(&release),
@@ -998,14 +1030,15 @@ async fn subscription_close_surfaces_background_delivery_errors() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.failing-ack".to_string(),
-                consumer_group: "cg.failing-ack".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.failing-ack").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.failing-ack").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             AutoAckHandler { tx },
         )
         .await
@@ -1249,14 +1282,15 @@ async fn auto_ack_uses_batched_xack() {
     let (tx, mut rx) = mpsc::channel(TOTAL);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.batch-ack".to_string(),
-                consumer_group: "cg.batch-ack".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: TOTAL,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.batch-ack").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.batch-ack").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(TOTAL)
+            .build()
+            .expect("build subscription config"),
             AutoAckHandler { tx },
         )
         .await
@@ -1364,16 +1398,16 @@ async fn retry_exhausted_without_dlq_returns_error() {
     let done = Arc::new(Notify::new());
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.no-dlq".to_string(),
-                consumer_group: "cg.no-dlq".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                max_retry: 1,
-                // Intentionally no dead_letter_topic — used to silently ack.
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.no-dlq").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.no-dlq").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .max_retry(1)
+            .build()
+            .expect("build subscription config"),
             AlwaysRetryHandler {
                 attempts: attempts.clone(),
                 last_err: last_err.clone(),
@@ -1410,13 +1444,16 @@ async fn auto_generated_consumer_name_has_random_suffix() {
     let backend = Arc::new(MemoryStreamBackend::default());
     let bus = StreamBus::new(backend, StreamBusOptions::default()).expect("construct bus");
 
-    let cfg = || SubscriptionConfig {
-        topic: "evt.cn-rand".to_string(),
-        consumer_group: "cg.cn-rand".to_string(),
-        consumer_name: String::new(),
-        ack_mode: AckMode::AutoOnHandlerSuccess,
-        max_in_flight: 1,
-        ..Default::default()
+    let cfg = || {
+        eventbus_core::SubscriptionConfig::builder(
+            eventbus_core::Topic::new("evt.cn-rand").expect("topic"),
+            eventbus_core::ConsumerGroup::new("cg.cn-rand").expect("group"),
+        )
+        .consumer_name(eventbus_core::ConsumerName::auto())
+        .ack_mode(AckMode::AutoOnHandlerSuccess)
+        .max_in_flight(1)
+        .build()
+        .expect("build subscription config")
     };
 
     let (tx_a, _rx_a) = mpsc::channel(1);
@@ -1448,14 +1485,15 @@ async fn subscription_is_running_flips_on_close() {
     let (tx, _rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.is-running".to_string(),
-                consumer_group: "cg.is-running".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.is-running").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.is-running").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             AutoAckHandler { tx },
         )
         .await
@@ -1467,18 +1505,11 @@ async fn subscription_is_running_flips_on_close() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn publish_rejects_topic_with_control_char() {
-    let backend = Arc::new(MemoryStreamBackend::default());
-    let bus = StreamBus::new(backend.clone(), StreamBusOptions::default()).expect("construct bus");
-
-    let mut msg = message("evt.ok", "uid-1");
-    msg.topic = "evt.\u{0007}bell".to_string();
-    let err = bus
-        .publish(msg, PublishOptions::default())
-        .await
+async fn topic_new_rejects_control_char() {
+    // Topic is validated at construction; the bus boundary trusts the type.
+    let err = eventbus_core::Topic::new("evt.\u{0007}bell")
         .expect_err("control char in topic must be rejected");
     assert!(matches!(err, EventBusError::Validation(_)));
-    assert_eq!(backend.stream_len("evt.\u{0007}bell").await, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1509,14 +1540,15 @@ async fn error_observer_receives_ack_flush_failures() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.observer-ack".to_string(),
-                consumer_group: "cg.observer-ack".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: 1,
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.observer-ack").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.observer-ack").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             AutoAckHandler { tx },
         )
         .await
@@ -1583,15 +1615,15 @@ async fn default_max_pending_acks_does_not_inflate_handler_concurrency() {
 
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.cap".to_string(),
-                consumer_group: "cg.cap".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::Manual,
-                max_in_flight: 1,
-                // max_pending_acks left at 0 → normalized to 2 * max_in_flight
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.cap").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.cap").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::Manual)
+            .max_in_flight(1)
+            .build()
+            .expect("build subscription config"),
             H {
                 in_flight: Arc::clone(&in_flight),
                 peak: Arc::clone(&peak),
@@ -1743,15 +1775,16 @@ async fn malformed_entry_is_acked_dlqd_and_does_not_stall_batch() {
     let (tx, mut rx) = mpsc::channel(1);
     let sub = bus
         .subscribe(
-            SubscriptionConfig {
-                topic: "evt.poison".to_string(),
-                consumer_group: "cg.poison".to_string(),
-                consumer_name: "consumer-1".to_string(),
-                ack_mode: AckMode::AutoOnHandlerSuccess,
-                max_in_flight: 1,
-                dead_letter_topic: Some("evt.poison.dlq".to_string()),
-                ..Default::default()
-            },
+            eventbus_core::SubscriptionConfig::builder(
+                eventbus_core::Topic::new("evt.poison").expect("topic"),
+                eventbus_core::ConsumerGroup::new("cg.poison").expect("group"),
+            )
+            .consumer_name(eventbus_core::ConsumerName::new("consumer-1").expect("consumer name"))
+            .ack_mode(AckMode::AutoOnHandlerSuccess)
+            .max_in_flight(1)
+            .dead_letter_topic(eventbus_core::Topic::new("evt.poison.dlq").expect("dlq topic"))
+            .build()
+            .expect("build subscription config"),
             AutoAckHandler { tx },
         )
         .await
