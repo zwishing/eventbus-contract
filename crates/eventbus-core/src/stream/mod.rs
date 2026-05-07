@@ -1,16 +1,12 @@
 mod ack_flusher;
 mod auto_finalize;
 mod backend;
-pub mod backends;
 mod bus;
 mod delivery;
 mod observer;
 mod subscription;
 
 pub use backend::{ClaimedMessage, FetchedEntry, StreamBackend};
-pub use backends::MemoryStreamBackend;
-#[cfg(feature = "redis-backend")]
-pub use backends::RedisBackend;
 pub use bus::{StreamBus, StreamBusOptions};
 pub use observer::{ErrorObserver, ErrorScope};
 pub use subscription::StreamSubscription;

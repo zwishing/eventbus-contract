@@ -350,7 +350,10 @@ dependencies = [
  "bytes",
  "chrono",
  "criterion",
- "dashmap",
+ "eventbus-integration",
+ "eventbus-memory",
+ "eventbus-outbox",
+ "eventbus-redis",
  "rand",
  "redis",
  "serde",
@@ -380,17 +383,24 @@ dependencies = [
 name = "eventbus-outbox"
 version = "0.2.0"
 dependencies = [
+ "bytes",
  "chrono",
  "eventbus-core",
+ "serde",
 ]
 
 [[package]]
 name = "eventbus-redis"
 version = "0.2.0"
 dependencies = [
+ "bytes",
+ "chrono",
+ "dashmap",
  "eventbus-core",
  "redis",
+ "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

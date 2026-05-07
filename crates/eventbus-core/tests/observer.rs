@@ -4,13 +4,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use eventbus_core::stream::{
-    ErrorObserver, ErrorScope, MemoryStreamBackend, StreamBus, StreamBusOptions,
-};
+use eventbus_core::stream::{ErrorObserver, ErrorScope, StreamBus, StreamBusOptions};
 use eventbus_core::{
     BoxFuture, ConsumerGroup, DeliveryHandle, EventBusError, Handler, Headers, Message,
     PublishOptions, SubscriptionConfig, Topic,
 };
+use eventbus_memory::MemoryStreamBackend;
 use tokio::time::sleep;
 
 #[derive(Default)]

@@ -10,5 +10,8 @@
 //! with [`StreamBus`](eventbus_core::stream::StreamBus) to obtain a
 //! `Publisher + Subscriber`. The `tls` feature wires `redis` over native-TLS.
 
-pub use eventbus_core::codec::JsonCodec;
-pub use eventbus_core::stream::RedisBackend;
+pub mod codec;
+pub mod redis;
+
+pub use codec::JsonCodec;
+pub use redis::{stream_bus_from_connection, RedisBackend};
