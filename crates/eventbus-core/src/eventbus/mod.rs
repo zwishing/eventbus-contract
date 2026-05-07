@@ -318,24 +318,46 @@ impl SubscriptionConfig {
 // Traits
 // ---------------------------------------------------------------------------
 
+/// Read-only view of a message in flight.
+///
+/// Backends supply this to handlers as part of [`DeliveryHandle`]. The handler
+/// can inspect the message and delivery state, then call methods on
+/// [`DeliveryControl`] to finalize.
 pub trait Delivery: DeliveryInspector + Send + Sync {
     fn message(&self) -> &Message;
-    fn ack(&self) -> crate::BoxFuture<'_, Result<(), EventBusError>>;
-    fn nack(
-        &self,
-        reason: &(dyn std::error::Error + Send + Sync),
-    ) -> crate::BoxFuture<'_, Result<(), EventBusError>>;
-    fn retry(
-        &self,
-        reason: &(dyn std::error::Error + Send + Sync),
-    ) -> crate::BoxFuture<'_, Result<(), EventBusError>>;
 }
 
+/// Finalize a delivery exactly once.
+///
+/// Each method consumes `Box<Self>`, so the compiler guarantees a delivery is
+/// finalized at most once: a handler that calls `ack()` cannot call `nack()`
+/// or `retry()` after — the box is already moved.
+///
+/// Dropping the box without calling any of these is also valid: the message
+/// is left un-acked and will be reclaimed by the backend after the
+/// configured idle timeout.
+pub trait DeliveryControl: Send {
+    fn ack(self: Box<Self>) -> crate::BoxFuture<'static, Result<(), EventBusError>>;
+    fn nack(
+        self: Box<Self>,
+        reason: crate::BoxedError,
+    ) -> crate::BoxFuture<'static, Result<(), EventBusError>>;
+    fn retry(
+        self: Box<Self>,
+        reason: crate::BoxedError,
+    ) -> crate::BoxFuture<'static, Result<(), EventBusError>>;
+}
+
+/// Composite trait — a handler-facing delivery. Anything that is both
+/// [`Delivery`] (read) and [`DeliveryControl`] (finalize) qualifies.
+pub trait DeliveryHandle: Delivery + DeliveryControl {}
+impl<T: Delivery + DeliveryControl + ?Sized> DeliveryHandle for T {}
+
 pub trait Handler: Send + Sync {
-    fn handle<'a>(
-        &'a self,
-        delivery: &'a (dyn Delivery + Send + Sync),
-    ) -> crate::BoxFuture<'a, Result<(), EventBusError>>;
+    fn handle(
+        &self,
+        delivery: Box<dyn DeliveryHandle>,
+    ) -> crate::BoxFuture<'_, Result<(), EventBusError>>;
 }
 
 pub trait Subscription: Send + Sync {

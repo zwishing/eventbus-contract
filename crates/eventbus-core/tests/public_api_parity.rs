@@ -176,24 +176,6 @@ fn delivery_trait_exposes_delivery_inspection() {
         fn message(&self) -> &Message {
             panic!("test helper does not expose a message reference")
         }
-
-        fn ack(&self) -> eventbus_core::BoxFuture<'_, Result<(), eventbus_core::EventBusError>> {
-            Box::pin(async move { Ok(()) })
-        }
-
-        fn nack(
-            &self,
-            _reason: &(dyn std::error::Error + Send + Sync),
-        ) -> eventbus_core::BoxFuture<'_, Result<(), eventbus_core::EventBusError>> {
-            Box::pin(async move { Ok(()) })
-        }
-
-        fn retry(
-            &self,
-            _reason: &(dyn std::error::Error + Send + Sync),
-        ) -> eventbus_core::BoxFuture<'_, Result<(), eventbus_core::EventBusError>> {
-            Box::pin(async move { Ok(()) })
-        }
     }
 
     assert_delivery_has_inspector(&DeliveryWithInspection);

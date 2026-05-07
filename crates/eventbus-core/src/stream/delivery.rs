@@ -1,13 +1,11 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit};
 
 use crate::{
-    Delivery, DeliveryInspector, DeliveryState, EventBusError, Message, SubscriptionConfig,
-    HEADER_DEAD_LETTER_REASON, HEADER_RETRY_ATTEMPT, HEADER_RETRY_REASON,
+    BoxedError, Delivery, DeliveryControl, DeliveryInspector, DeliveryState, EventBusError,
+    Message, SubscriptionConfig, HEADER_DEAD_LETTER_REASON, HEADER_RETRY_ATTEMPT,
+    HEADER_RETRY_REASON,
 };
 
 use super::ack_flusher::AckRequest;
@@ -24,6 +22,10 @@ use super::backend::{SharedBackend, StreamBackend};
 /// Acks are batched: `mark_acked` sends the message ID to a background
 /// flusher via `ack_tx`, then awaits a oneshot for the result. This turns
 /// N per-message XACK round-trips into ~(N / batch_size) batched commands.
+///
+/// Finalization is enforced by the type system: [`DeliveryControl`] methods
+/// take `Box<Self>`, so calling `ack()` consumes the box and the compiler
+/// rejects any subsequent call. No runtime guard is needed.
 pub(super) struct StreamDelivery<B: StreamBackend> {
     backend: SharedBackend<B>,
     ack_tx: mpsc::Sender<AckRequest>,
@@ -31,7 +33,6 @@ pub(super) struct StreamDelivery<B: StreamBackend> {
     message: Arc<Message>,
     state: DeliveryState,
     config: Arc<SubscriptionConfig>,
-    finalized: AtomicBool,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -52,13 +53,8 @@ impl<B: StreamBackend> StreamDelivery<B> {
             message,
             state,
             config,
-            finalized: AtomicBool::new(false),
             _permit: permit,
         }
-    }
-
-    pub(super) fn is_finalized(&self) -> bool {
-        self.finalized.load(Ordering::Acquire)
     }
 
     async fn mark_acked(&self) -> Result<(), EventBusError> {
@@ -88,14 +84,12 @@ impl<B: StreamBackend> StreamDelivery<B> {
         Ok(())
     }
 
-    fn begin_finalize(&self) -> bool {
-        self.finalized
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
-
-    fn reset_finalize(&self) {
-        self.finalized.store(false, Ordering::Release);
+    /// AutoOnReceive seam: ack the message *before* delivering to the handler.
+    /// Internally just runs `mark_acked` without touching `Self`'s ownership.
+    /// If the handler later calls `ack()` on its `Box<Self>`, the redundant
+    /// XACK is treated as idempotent at the backend layer.
+    pub(super) async fn pre_ack(&self) -> Result<(), EventBusError> {
+        self.mark_acked().await
     }
 }
 
@@ -109,76 +103,40 @@ impl<B: StreamBackend> Delivery for StreamDelivery<B> {
     fn message(&self) -> &Message {
         &self.message
     }
+}
 
-    fn ack(&self) -> crate::BoxFuture<'_, Result<(), EventBusError>> {
-        Box::pin(async move {
-            if !self.begin_finalize() {
-                return Ok(());
-            }
-
-            if let Err(err) = self.mark_acked().await {
-                self.reset_finalize();
-                return Err(err);
-            }
-
-            Ok(())
-        })
+impl<B: StreamBackend> DeliveryControl for StreamDelivery<B> {
+    fn ack(self: Box<Self>) -> crate::BoxFuture<'static, Result<(), EventBusError>> {
+        Box::pin(async move { self.mark_acked().await })
     }
 
     fn nack(
-        &self,
-        reason: &(dyn std::error::Error + Send + Sync),
-    ) -> crate::BoxFuture<'_, Result<(), EventBusError>> {
-        // Snapshot the reason synchronously so the BoxFuture doesn't need to
-        // outlive the borrow of `reason`.
-        let reason_str = reason.to_string();
+        self: Box<Self>,
+        reason: BoxedError,
+    ) -> crate::BoxFuture<'static, Result<(), EventBusError>> {
         Box::pin(async move {
-            if !self.begin_finalize() {
-                return Ok(());
-            }
-
-            if let Err(err) = self.publish_dead_letter(&reason_str).await {
-                self.reset_finalize();
-                return Err(err);
-            }
-
-            if let Err(err) = self.mark_acked().await {
-                self.reset_finalize();
-                return Err(err);
-            }
-
-            Ok(())
+            let reason_str = reason.to_string();
+            self.publish_dead_letter(&reason_str).await?;
+            self.mark_acked().await
         })
     }
 
     fn retry(
-        &self,
-        reason: &(dyn std::error::Error + Send + Sync),
-    ) -> crate::BoxFuture<'_, Result<(), EventBusError>> {
-        let reason_str = reason.to_string();
+        self: Box<Self>,
+        reason: BoxedError,
+    ) -> crate::BoxFuture<'static, Result<(), EventBusError>> {
         Box::pin(async move {
-            if !self.begin_finalize() {
-                return Ok(());
-            }
-
             let retry_exhausted = self.state.attempt >= self.state.max_attempt;
+            let reason_str = reason.to_string();
 
             if retry_exhausted {
-                // Without a dead-letter topic the message would be silently
-                // acked and lost. Surface the contract violation to the
-                // handler so it can decide between dropping or stashing the
-                // payload elsewhere.
                 if self.config.dead_letter_topic.is_none() {
-                    self.reset_finalize();
                     return Err(EventBusError::Validation(format!(
                         "retry exhausted ({}/{}) but no dead_letter_topic configured for topic {}",
                         self.state.attempt, self.state.max_attempt, self.config.topic,
                     )));
                 }
-                if let Err(err) = self.publish_dead_letter(&reason_str).await {
-                    self.reset_finalize();
-                    return Err(err);
-                }
+                self.publish_dead_letter(&reason_str).await?;
             } else {
                 let mut retried = Message::clone(&self.message);
                 retried.headers.insert(
@@ -187,20 +145,11 @@ impl<B: StreamBackend> Delivery for StreamDelivery<B> {
                 );
                 retried
                     .headers
-                    .insert(HEADER_RETRY_REASON.to_string(), reason_str.clone());
+                    .insert(HEADER_RETRY_REASON.to_string(), reason_str);
 
-                if let Err(err) = self.backend.publish(&self.config.topic, retried).await {
-                    self.reset_finalize();
-                    return Err(err);
-                }
+                self.backend.publish(&self.config.topic, retried).await?;
             }
-
-            if let Err(err) = self.mark_acked().await {
-                self.reset_finalize();
-                return Err(err);
-            }
-
-            Ok(())
+            self.mark_acked().await
         })
     }
 }

@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use chrono::Utc;
     use eventbus_core::stream::{StreamBus, StreamBusOptions};
     use eventbus_core::{
-        AckMode, Delivery, EventBusError, Handler, Headers, Message, PublishOptions,
+        AckMode, DeliveryHandle, EventBusError, Handler, Headers, Message, PublishOptions,
         SubscriptionConfig,
     };
     use tokio::sync::mpsc;
@@ -45,19 +45,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     impl Handler for PrintHandler {
-        fn handle<'a>(
-            &'a self,
-            delivery: &'a (dyn Delivery + Send + Sync),
-        ) -> eventbus_core::BoxFuture<'a, Result<(), EventBusError>> {
+        fn handle(
+            &self,
+            delivery: Box<dyn DeliveryHandle>,
+        ) -> eventbus_core::BoxFuture<'_, Result<(), EventBusError>> {
             Box::pin(async move {
-                let msg = delivery.message();
+                let msg = delivery.message().clone();
                 println!(
                     "[handler] topic={} uid={} kind={}",
                     msg.topic, msg.uid, msg.kind
                 );
                 delivery.ack().await?;
                 self.tx
-                    .send(msg.clone())
+                    .send(msg)
                     .await
                     .map_err(|e| EventBusError::Internal(e.to_string()))
             })
