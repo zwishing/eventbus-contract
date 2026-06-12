@@ -28,7 +28,7 @@ pub mod redis;
 #[cfg(feature = "watermill")]
 pub use codec::WatermillStreamCodec;
 pub use codec::{
-    AutoDetectRedisStreamCodec, DecodeContext, EncodeContext, EventbusJsonStreamCodec, JsonCodec,
+    AutoDetectRedisStreamCodec, DecodeContext, EncodeContext, EnvelopeStreamCodec, JsonCodec,
     RedisStreamCodec,
 };
 pub use redis::{stream_bus_from_connection, RedisBackend};

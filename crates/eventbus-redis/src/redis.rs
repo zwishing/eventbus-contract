@@ -33,6 +33,7 @@
 //! should connect over `rediss://` and ensure the server certificate is
 //! validated against a known CA.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,16 +44,13 @@ use redis::streams::{StreamId, StreamRangeReply, StreamReadReply};
 use redis::{FromRedisValue, Value};
 
 use crate::codec::{
-    DecodeContext, EncodeContext, EventbusJsonStreamCodec, JsonCodec, RedisStreamCodec,
+    DecodeContext, EncodeContext, EnvelopeStreamCodec, JsonCodec, RedisStreamCodec,
     RedisStreamFields,
 };
 use eventbus_core::stream::{
     ClaimedMessage, FetchedEntry, StreamBackend, StreamBus, StreamBusOptions,
 };
 use eventbus_core::{Codec, EventBusError, Message, PartialDeliveryState, HEADER_RETRY_ATTEMPT};
-
-#[cfg(test)]
-const REDIS_FIELD_MESSAGE: &str = "message";
 
 /// Pre-decode upper bound on the raw envelope size (8 MiB).
 ///
@@ -65,7 +63,7 @@ const MAX_RAW_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 /// A [`StreamBackend`] backed by a real Redis connection.
 ///
 /// The wire format is delegated to codecs; the default [`JsonCodec`] wrapped by
-/// [`EventbusJsonStreamCodec`] matches the Go `StreamBus` envelope so the two
+/// [`EnvelopeStreamCodec`] matches the Go `StreamBus` envelope so the two
 /// implementations interop. Swap in a binary codec via
 /// [`RedisBackend::with_codec`] when wire compat is not required and
 /// throughput matters, or register field-level codecs for specific streams,
@@ -120,14 +118,21 @@ impl CodecRegistry {
     }
 
     fn read_codec(&self, stream: &str, group: &str, consumer: &str) -> Arc<dyn RedisStreamCodec> {
-        let subscription_key = (stream.to_string(), group.to_string(), consumer.to_string());
-        if let Some(codec) = self.subscription_read.get(&subscription_key) {
-            return Arc::clone(codec.value());
+        // The `is_empty` guards keep the common no-override case free of the
+        // per-call key `String` allocations — this runs on every fetch /
+        // reclaim poll. Tuple keys cannot be looked up by `(&str, ..)`.
+        if !self.subscription_read.is_empty() {
+            let key = (stream.to_string(), group.to_string(), consumer.to_string());
+            if let Some(codec) = self.subscription_read.get(&key) {
+                return Arc::clone(codec.value());
+            }
         }
 
-        let group_key = (stream.to_string(), group.to_string());
-        if let Some(codec) = self.group_read.get(&group_key) {
-            return Arc::clone(codec.value());
+        if !self.group_read.is_empty() {
+            let key = (stream.to_string(), group.to_string());
+            if let Some(codec) = self.group_read.get(&key) {
+                return Arc::clone(codec.value());
+            }
         }
 
         if let Some(codec) = self.stream_read.get(stream) {
@@ -198,7 +203,7 @@ impl RedisBackend {
     pub fn with_codec(conn: MultiplexedConnection, codec: Arc<dyn Codec>) -> Self {
         Self {
             conn,
-            registry: CodecRegistry::new(Arc::new(EventbusJsonStreamCodec::from_core_codec(codec))),
+            registry: CodecRegistry::new(Arc::new(EnvelopeStreamCodec::from_core_codec(codec))),
             reclaim_starts: DashMap::new(),
         }
     }
@@ -208,6 +213,10 @@ impl RedisBackend {
     /// Read resolution prefers subscription-specific codecs first, then
     /// group-level codecs, then this stream-level codec, and finally the
     /// default codec.
+    ///
+    /// Registrations may be made at any time, including while consumers are
+    /// running; they take effect from the next fetch/reclaim poll. Entries
+    /// already decoded with the previous codec are not re-decoded.
     pub fn set_stream_read_codec(&self, stream: &str, codec: Arc<dyn RedisStreamCodec>) {
         self.registry.set_stream_read_codec(stream, codec);
     }
@@ -242,25 +251,26 @@ impl RedisBackend {
     /// Register a write codec for `stream`.
     ///
     /// Writes use the stream-specific codec when present and otherwise fall
-    /// back to the default write codec.
+    /// back to the default write codec. Registrations take effect from the
+    /// next publish.
     pub fn set_stream_write_codec(&self, stream: &str, codec: Arc<dyn RedisStreamCodec>) {
         self.registry.set_stream_write_codec(stream, codec);
     }
 
     /// Register [`crate::codec::WatermillStreamCodec`] as the read codec for `stream`.
     #[cfg(feature = "watermill")]
-    pub fn set_watermill_read_stream(&self, stream: impl Into<String>) {
-        let stream = stream.into();
-        self.set_stream_read_codec(&stream, Arc::new(crate::codec::WatermillStreamCodec));
+    pub fn set_watermill_read_stream(&self, stream: &str) {
+        self.set_stream_read_codec(stream, Arc::new(crate::codec::WatermillStreamCodec));
     }
 
-    /// Register [`crate::codec::AutoDetectRedisStreamCodec`] as the read codec for `stream`.
+    /// Register a Watermill-aware [`crate::codec::AutoDetectRedisStreamCodec`]
+    /// as the read codec for `stream`, accepting both the default envelope
+    /// format and Watermill canonical entries.
     #[cfg(feature = "watermill")]
-    pub fn set_auto_detect_read_stream(&self, stream: impl Into<String>) {
-        let stream = stream.into();
+    pub fn set_auto_detect_read_stream(&self, stream: &str) {
         self.set_stream_read_codec(
-            &stream,
-            Arc::new(crate::codec::AutoDetectRedisStreamCodec::default()),
+            stream,
+            Arc::new(crate::codec::AutoDetectRedisStreamCodec::with_watermill()),
         );
     }
 }
@@ -360,7 +370,7 @@ impl StreamBackend for RedisBackend {
             .map_err(|e| EventBusError::source(format!("xautoclaim on {stream}"), e))?;
 
         let codec = self.registry.read_codec(stream, group, consumer);
-        let (next_start, claimed) = parse_autoclaim(raw, stream, codec)?;
+        let (next_start, claimed) = parse_autoclaim(raw, stream, codec.as_ref())?;
         self.reclaim_starts.insert(cursor_key, next_start);
         Ok(claimed)
     }
@@ -407,9 +417,9 @@ impl StreamBackend for RedisBackend {
         let codec = self.registry.read_codec(stream, group, consumer);
         Ok(reply
             .keys
-            .iter()
-            .flat_map(|k| k.ids.iter())
-            .map(|entry| decode_entry(stream, entry, false, Arc::clone(&codec)))
+            .into_iter()
+            .flat_map(|k| k.ids)
+            .map(|entry| decode_entry(stream, entry, false, codec.as_ref()))
             .collect())
     }
 
@@ -470,13 +480,15 @@ impl StreamBackend for RedisBackend {
 /// instead of poisoning the whole batch.
 fn decode_entry(
     stream: &str,
-    entry: &StreamId,
+    entry: StreamId,
     redelivered: bool,
-    codec: Arc<dyn RedisStreamCodec>,
+    codec: &dyn RedisStreamCodec,
 ) -> FetchedEntry {
-    let id = entry.id.clone();
+    // Consuming the entry lets `entry_fields` move the field bytes out of the
+    // redis reply instead of cloning them (payloads can be MiB-sized).
+    let id = entry.id;
 
-    let fields = match entry_fields(entry) {
+    let fields = match entry_fields(&id, entry.map) {
         Ok(fields) => fields,
         Err(error) => return FetchedEntry::Malformed { id, error },
     };
@@ -518,7 +530,7 @@ fn decode_entry(
 fn parse_autoclaim(
     raw: Value,
     stream: &str,
-    codec: Arc<dyn RedisStreamCodec>,
+    codec: &dyn RedisStreamCodec,
 ) -> Result<(String, Vec<FetchedEntry>), EventBusError> {
     let items = match raw {
         Value::Array(v) if v.len() >= 2 => v,
@@ -540,54 +552,28 @@ fn parse_autoclaim(
     // instead of poisoning the whole reclaim batch.
     let claimed = range
         .ids
-        .iter()
-        .map(|entry| decode_entry(stream, entry, true, Arc::clone(&codec)))
+        .into_iter()
+        .map(|entry| decode_entry(stream, entry, true, codec))
         .collect();
 
     Ok((next_start, claimed))
 }
 
-fn entry_fields(entry: &StreamId) -> Result<RedisStreamFields, EventBusError> {
-    let mut fields = RedisStreamFields::with_capacity(entry.map.len());
+fn entry_fields(id: &str, map: HashMap<String, Value>) -> Result<RedisStreamFields, EventBusError> {
+    let mut fields = RedisStreamFields::with_capacity(map.len());
     let mut total_raw_bytes = 0usize;
 
-    for (key, val) in &entry.map {
-        let bytes = match val {
-            Value::BulkString(bytes) => {
-                check_raw_field_size(
-                    &entry.id,
-                    key,
-                    bytes.len(),
-                    &mut total_raw_bytes,
-                    fields.len() + 1,
-                )?;
-                bytes.clone()
-            }
-            Value::SimpleString(s) => {
-                check_raw_field_size(
-                    &entry.id,
-                    key,
-                    s.len(),
-                    &mut total_raw_bytes,
-                    fields.len() + 1,
-                )?;
-                s.as_bytes().to_vec()
-            }
-            other => {
-                let bytes = redis_value_to_bytes(other).map_err(|err| {
-                    EventBusError::source(format!("read stream field {key}"), err)
-                })?;
-                check_raw_field_size(
-                    &entry.id,
-                    key,
-                    bytes.len(),
-                    &mut total_raw_bytes,
-                    fields.len() + 1,
-                )?;
-                bytes
-            }
-        };
-        fields.insert(key.clone(), bytes);
+    for (key, val) in map {
+        let bytes = redis_value_to_bytes(val)
+            .map_err(|err| EventBusError::source(format!("read stream field {key}"), err))?;
+        check_raw_field_size(
+            id,
+            &key,
+            bytes.len(),
+            &mut total_raw_bytes,
+            fields.len() + 1,
+        )?;
+        fields.insert(key, bytes);
     }
 
     Ok(fields)
@@ -617,12 +603,13 @@ fn check_raw_field_size(
     Ok(())
 }
 
-fn redis_value_to_bytes(value: &Value) -> Result<Vec<u8>, redis::RedisError> {
+/// Codecs may produce either text or binary; accept both Redis Value shapes.
+fn redis_value_to_bytes(value: Value) -> Result<Vec<u8>, redis::RedisError> {
     match value {
-        Value::BulkString(b) => Ok(b.clone()),
-        Value::SimpleString(s) => Ok(s.as_bytes().to_vec()),
+        Value::BulkString(b) => Ok(b),
+        Value::SimpleString(s) => Ok(s.into_bytes()),
         other => {
-            let s: String = FromRedisValue::from_redis_value(other.clone())?;
+            let s: String = FromRedisValue::from_redis_value(other)?;
             Ok(s.into_bytes())
         }
     }
@@ -663,7 +650,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::codec::{EventbusJsonStreamCodec, RedisStreamCodec};
+    use crate::codec::{EnvelopeStreamCodec, RedisStreamCodec, REDIS_FIELD_MESSAGE};
 
     fn assert_stream_backend<T: StreamBackend>() {}
 
@@ -693,9 +680,9 @@ mod tests {
 
         let decoded = decode_entry(
             "orders.created",
-            &entry,
+            entry,
             false,
-            Arc::new(EventbusJsonStreamCodec::default()),
+            &EnvelopeStreamCodec::default(),
         );
         assert_eq!(malformed_id(&decoded), Some("1-0"));
     }
@@ -714,12 +701,8 @@ mod tests {
             Value::Array(vec![]),
         ]);
 
-        let (_, entries) = parse_autoclaim(
-            raw,
-            "orders.created",
-            Arc::new(EventbusJsonStreamCodec::default()),
-        )
-        .expect("parse autoclaim");
+        let (_, entries) = parse_autoclaim(raw, "orders.created", &EnvelopeStreamCodec::default())
+            .expect("parse autoclaim");
         assert_eq!(entries.len(), 1);
         assert_eq!(malformed_id(&entries[0]), Some("1-0"));
     }
@@ -757,12 +740,9 @@ mod tests {
             Value::Array(vec![]),
         ]);
 
-        let (cursor, entries) = parse_autoclaim(
-            raw,
-            "orders.created",
-            Arc::new(EventbusJsonStreamCodec::default()),
-        )
-        .expect("parse xautoclaim");
+        let (cursor, entries) =
+            parse_autoclaim(raw, "orders.created", &EnvelopeStreamCodec::default())
+                .expect("parse xautoclaim");
 
         assert_eq!(cursor, "42-0");
         assert_eq!(entries.len(), 1);
@@ -827,7 +807,7 @@ mod tests {
             delivered_count: None,
         };
 
-        let decoded = decode_entry("custom.stream", &entry, false, Arc::new(PayloadOnlyCodec));
+        let decoded = decode_entry("custom.stream", entry, false, &PayloadOnlyCodec);
 
         let claimed = match decoded {
             FetchedEntry::Decoded(c) => c,
@@ -866,9 +846,9 @@ mod tests {
 
         let decoded = decode_entry(
             "mapset.mosaic",
-            &entry,
+            entry,
             false,
-            Arc::new(crate::codec::WatermillStreamCodec),
+            &crate::codec::WatermillStreamCodec,
         );
 
         let claimed = match decoded {
@@ -905,9 +885,9 @@ mod tests {
 
         let decoded = decode_entry(
             "mapset.mosaic",
-            &entry,
+            entry,
             false,
-            Arc::new(crate::codec::AutoDetectRedisStreamCodec::default()),
+            &crate::codec::AutoDetectRedisStreamCodec::with_watermill(),
         );
 
         let claimed = match decoded {
@@ -924,7 +904,7 @@ mod tests {
 
     #[test]
     fn decode_entry_preserves_eventbus_json_with_default_codec() {
-        let codec = EventbusJsonStreamCodec::default();
+        let codec = EnvelopeStreamCodec::default();
         let mut fields = codec
             .encode_fields(
                 crate::codec::EncodeContext {
@@ -956,7 +936,7 @@ mod tests {
             delivered_count: None,
         };
 
-        let decoded = decode_entry("native.events", &entry, false, Arc::new(codec));
+        let decoded = decode_entry("native.events", entry, false, &codec);
         let claimed = match decoded {
             FetchedEntry::Decoded(c) => c,
             FetchedEntry::Malformed { error, .. } => panic!("expected decoded, got {error:?}"),
@@ -1010,7 +990,7 @@ mod tests {
             delivered_count: None,
         };
 
-        let decoded = decode_entry("oversize.stream", &entry, false, Arc::new(NeverCodec));
+        let decoded = decode_entry("oversize.stream", entry, false, &NeverCodec);
         match decoded {
             FetchedEntry::Malformed { error, .. } => {
                 let msg = error.to_string();
@@ -1023,17 +1003,12 @@ mod tests {
 
     #[test]
     fn entry_fields_rejects_single_field_over_limit() {
-        let entry = StreamId {
-            id: "oversize-single-0".into(),
-            map: HashMap::from([(
-                "payload".into(),
-                Value::BulkString(vec![0; MAX_RAW_PAYLOAD_BYTES + 1]),
-            )]),
-            milliseconds_elapsed_from_delivery: None,
-            delivered_count: None,
-        };
+        let map = HashMap::from([(
+            "payload".to_string(),
+            Value::BulkString(vec![0; MAX_RAW_PAYLOAD_BYTES + 1]),
+        )]);
 
-        let err = entry_fields(&entry).expect_err("oversize field should fail");
+        let err = entry_fields("oversize-single-0", map).expect_err("oversize field should fail");
         let msg = err.to_string();
         assert!(msg.contains("payload"), "unexpected error: {err}");
         assert!(
@@ -1045,17 +1020,12 @@ mod tests {
     #[test]
     fn entry_fields_rejects_total_field_bytes_over_limit() {
         let half_plus_one = (MAX_RAW_PAYLOAD_BYTES / 2) + 1;
-        let entry = StreamId {
-            id: "oversize-total-0".into(),
-            map: HashMap::from([
-                ("a".into(), Value::BulkString(vec![0; half_plus_one])),
-                ("b".into(), Value::BulkString(vec![0; half_plus_one])),
-            ]),
-            milliseconds_elapsed_from_delivery: None,
-            delivered_count: None,
-        };
+        let map = HashMap::from([
+            ("a".to_string(), Value::BulkString(vec![0; half_plus_one])),
+            ("b".to_string(), Value::BulkString(vec![0; half_plus_one])),
+        ]);
 
-        let err = entry_fields(&entry).expect_err("oversize total should fail");
+        let err = entry_fields("oversize-total-0", map).expect_err("oversize total should fail");
         let msg = err.to_string();
         assert!(msg.contains("raw payload"), "unexpected error: {err}");
         assert!(msg.contains("2 fields"), "unexpected error: {err}");
@@ -1063,7 +1033,7 @@ mod tests {
 
     #[test]
     fn registry_prefers_subscription_then_group_then_stream_then_default_read_codec() {
-        let registry = CodecRegistry::new(Arc::new(EventbusJsonStreamCodec::default()));
+        let registry = CodecRegistry::new(Arc::new(EnvelopeStreamCodec::default()));
         let stream_codec = Arc::new(NamedTestCodec("stream"));
         let group_codec = Arc::new(NamedTestCodec("group"));
         let subscription_codec = Arc::new(NamedTestCodec("subscription"));
@@ -1083,7 +1053,7 @@ mod tests {
 
     #[test]
     fn registry_prefers_stream_write_codec_then_default_write_codec() {
-        let registry = CodecRegistry::new(Arc::new(EventbusJsonStreamCodec::default()));
+        let registry = CodecRegistry::new(Arc::new(EnvelopeStreamCodec::default()));
         registry.set_stream_write_codec("s", Arc::new(NamedTestCodec("stream-write")));
 
         assert_eq!(registry.write_codec("s").name(), "stream-write");

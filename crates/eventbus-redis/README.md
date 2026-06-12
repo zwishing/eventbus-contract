@@ -27,7 +27,7 @@ let bus = stream_bus_from_connection(conn, StreamBusOptions::default())?;
 
 - `default = []` - base Redis support over `redis-rs` `tokio-comp`.
 - `tls` - enable `rediss://` connections via `redis/tls-native-tls` + `redis/tokio-native-tls-comp`. Use `rediss://` URLs in production and ensure CA validation.
-- `watermill` - add `WatermillStreamCodec` and `AutoDetectRedisStreamCodec::default()` for reading Go Watermill canonical Redis Stream entries.
+- `watermill` - add `WatermillStreamCodec` and `AutoDetectRedisStreamCodec::with_watermill()` for reading Go Watermill canonical Redis Stream entries.
 
 ## Wire format
 

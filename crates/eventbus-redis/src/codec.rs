@@ -4,8 +4,8 @@
 //! Currently:
 //! - [`JsonCodec`]: wire-compatible with the Go `StreamBus`. Encodes a
 //!   `{"message": {...}}` envelope (matching `redisStreamPayload` in Go).
-//! - [`EventbusJsonStreamCodec`]: Redis field-map wrapper for `JsonCodec` or
-//!   another core byte-level codec.
+//! - [`EnvelopeStreamCodec`]: Redis field-map wrapper that stores the output
+//!   of any core byte-level [`Codec`] in a single `message` field.
 //! - [`AutoDetectRedisStreamCodec`]: read-only field-map codec that tries
 //!   configured Redis stream codecs in order.
 //! - `WatermillStreamCodec`: optional `watermill` feature codec for Go
@@ -21,6 +21,13 @@ use eventbus_core::{HEADER_CONTENT_TYPE, HEADER_EVENT_VERSION, HEADER_IDEMPOTENC
 pub use json::JsonCodec;
 
 pub type RedisStreamFields = HashMap<String, Vec<u8>>;
+
+/// Redis Stream field that holds the encoded envelope in the default format.
+pub(crate) const REDIS_FIELD_MESSAGE: &str = "message";
+
+/// Reserved Watermill entry field carrying the message UUID.
+#[cfg(feature = "watermill")]
+const WATERMILL_UUID_FIELD: &str = "_watermill_message_uuid";
 
 #[derive(Debug, Clone, Copy)]
 pub struct EncodeContext<'a> {
@@ -52,33 +59,38 @@ pub trait RedisStreamCodec: Send + Sync {
     fn can_decode(&self, fields: &RedisStreamFields) -> bool;
 }
 
-/// Redis stream wrapper that preserves the wrapped wire codec identity in [`Self::name`].
+/// Redis stream wrapper that stores the output of any core byte-level
+/// [`Codec`] in a single [`REDIS_FIELD_MESSAGE`] field, and preserves the
+/// wrapped wire codec identity in [`Self::name`].
+///
+/// With the default [`JsonCodec`] inner codec this matches the Go
+/// `StreamBus` wire format.
 #[derive(Clone)]
-pub struct EventbusJsonStreamCodec {
+pub struct EnvelopeStreamCodec {
     inner: Arc<dyn Codec>,
 }
 
-impl Default for EventbusJsonStreamCodec {
+impl Default for EnvelopeStreamCodec {
     fn default() -> Self {
         Self::from_core_codec(Arc::new(JsonCodec))
     }
 }
 
-impl EventbusJsonStreamCodec {
+impl EnvelopeStreamCodec {
     pub fn from_core_codec(inner: Arc<dyn Codec>) -> Self {
         Self { inner }
     }
 }
 
-impl std::fmt::Debug for EventbusJsonStreamCodec {
+impl std::fmt::Debug for EnvelopeStreamCodec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EventbusJsonStreamCodec")
+        f.debug_struct("EnvelopeStreamCodec")
             .field("inner", &self.inner.name())
             .finish()
     }
 }
 
-impl RedisStreamCodec for EventbusJsonStreamCodec {
+impl RedisStreamCodec for EnvelopeStreamCodec {
     fn name(&self) -> &str {
         self.inner.name()
     }
@@ -88,7 +100,10 @@ impl RedisStreamCodec for EventbusJsonStreamCodec {
         _ctx: EncodeContext<'_>,
         msg: &Message,
     ) -> Result<Vec<(String, Vec<u8>)>, EventBusError> {
-        Ok(vec![("message".to_string(), self.inner.encode(msg)?)])
+        Ok(vec![(
+            REDIS_FIELD_MESSAGE.to_string(),
+            self.inner.encode(msg)?,
+        )])
     }
 
     fn decode_fields(
@@ -96,14 +111,16 @@ impl RedisStreamCodec for EventbusJsonStreamCodec {
         _ctx: DecodeContext<'_>,
         fields: &RedisStreamFields,
     ) -> Result<Message, EventBusError> {
-        let bytes = fields.get("message").ok_or_else(|| {
-            EventBusError::Serialization("eventbus-json entry missing 'message' field".into())
+        let bytes = fields.get(REDIS_FIELD_MESSAGE).ok_or_else(|| {
+            EventBusError::Serialization(format!(
+                "envelope entry missing '{REDIS_FIELD_MESSAGE}' field"
+            ))
         })?;
         self.inner.decode(bytes)
     }
 
     fn can_decode(&self, fields: &RedisStreamFields) -> bool {
-        fields.contains_key("message")
+        fields.contains_key(REDIS_FIELD_MESSAGE)
     }
 }
 
@@ -116,15 +133,24 @@ impl AutoDetectRedisStreamCodec {
     pub fn new(codecs: Vec<Arc<dyn RedisStreamCodec>>) -> Self {
         Self { codecs }
     }
-}
 
-#[cfg(feature = "watermill")]
-impl Default for AutoDetectRedisStreamCodec {
-    fn default() -> Self {
+    /// Auto-detect between the default envelope format and Watermill
+    /// canonical entries, preferring the envelope format.
+    #[cfg(feature = "watermill")]
+    pub fn with_watermill() -> Self {
         Self::new(vec![
-            Arc::new(EventbusJsonStreamCodec::default()),
+            Arc::new(EnvelopeStreamCodec::default()),
             Arc::new(WatermillStreamCodec),
         ])
+    }
+}
+
+/// Detects only the default envelope format. Feature flags never change this
+/// set — use [`AutoDetectRedisStreamCodec::with_watermill`] (or
+/// [`AutoDetectRedisStreamCodec::new`]) to opt in to more formats.
+impl Default for AutoDetectRedisStreamCodec {
+    fn default() -> Self {
+        Self::new(vec![Arc::new(EnvelopeStreamCodec::default())])
     }
 }
 
@@ -189,6 +215,17 @@ impl RedisStreamCodec for AutoDetectRedisStreamCodec {
     }
 }
 
+/// Codec for Go Watermill canonical Redis Stream entries
+/// (`_watermill_message_uuid` / `metadata` / `payload`).
+///
+/// `kind`, `source`, `content_type`, and `event_version` are derived from
+/// producer-supplied metadata keys (`event_type`, `producer`, ...). Treat
+/// them as untrusted input: anything a Watermill producer writes flows into
+/// these fields, so validate them before making routing or trust decisions.
+///
+/// `occurred_at` is derived from the Redis entry ID's millisecond timestamp
+/// (stable across redeliveries), falling back to the decode time when the ID
+/// has no parseable timestamp.
 #[cfg(feature = "watermill")]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WatermillStreamCodec;
@@ -209,7 +246,7 @@ impl RedisStreamCodec for WatermillStreamCodec {
 
         Ok(vec![
             (
-                "_watermill_message_uuid".to_string(),
+                WATERMILL_UUID_FIELD.to_string(),
                 msg.uid.as_bytes().to_vec(),
             ),
             ("metadata".to_string(), metadata),
@@ -222,12 +259,12 @@ impl RedisStreamCodec for WatermillStreamCodec {
         ctx: DecodeContext<'_>,
         fields: &RedisStreamFields,
     ) -> Result<Message, EventBusError> {
-        let uid = decode_utf8_field(fields, "_watermill_message_uuid")?;
+        let uid = decode_utf8_field(fields, WATERMILL_UUID_FIELD)?;
         let mut headers = decode_watermill_metadata(fields)?;
         let payload = fields.get("payload").cloned().ok_or_else(|| {
             EventBusError::Serialization("watermill entry missing 'payload' field".into())
         })?;
-        headers.insert("_watermill_message_uuid".to_string(), uid.clone());
+        headers.insert(WATERMILL_UUID_FIELD.to_string(), uid.clone());
         let idempotency_key = headers
             .entry(HEADER_IDEMPOTENCY_KEY.to_string())
             .or_insert_with(|| uid.clone())
@@ -247,7 +284,7 @@ impl RedisStreamCodec for WatermillStreamCodec {
             key,
             kind,
             source,
-            occurred_at: chrono::Utc::now(),
+            occurred_at: occurred_at_from_redis_id(ctx.redis_id),
             headers,
             payload: bytes::Bytes::from(payload),
             content_type,
@@ -260,13 +297,28 @@ impl RedisStreamCodec for WatermillStreamCodec {
     }
 
     fn can_decode(&self, fields: &RedisStreamFields) -> bool {
-        fields.contains_key("_watermill_message_uuid") && fields.contains_key("payload")
+        fields.contains_key(WATERMILL_UUID_FIELD) && fields.contains_key("payload")
     }
+}
+
+/// Redis entry IDs are `<ms>-<seq>`; the leading milliseconds give a
+/// redelivery-stable `occurred_at`.
+#[cfg(feature = "watermill")]
+fn occurred_at_from_redis_id(redis_id: &str) -> chrono::DateTime<chrono::Utc> {
+    redis_id
+        .split('-')
+        .next()
+        .and_then(|ms| ms.parse::<i64>().ok())
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .unwrap_or_else(chrono::Utc::now)
 }
 
 #[cfg(feature = "watermill")]
 fn watermill_metadata(msg: &Message) -> HashMap<String, String> {
     let mut metadata = msg.headers.clone();
+    // The UUID has its own entry field; re-encoding it as metadata would
+    // accumulate a redundant key on every decode → encode bridge hop.
+    metadata.remove(WATERMILL_UUID_FIELD);
 
     if let Some(content_type) = &msg.content_type {
         metadata
@@ -418,7 +470,7 @@ mod stream_codec_tests {
     use chrono::Utc;
     use eventbus_core::{Codec, Message, Topic};
 
-    use super::{DecodeContext, EncodeContext, EventbusJsonStreamCodec, RedisStreamCodec};
+    use super::{DecodeContext, EncodeContext, EnvelopeStreamCodec, RedisStreamCodec};
     use crate::codec::JsonCodec;
 
     fn sample_message() -> Message {
@@ -441,8 +493,8 @@ mod stream_codec_tests {
     }
 
     #[test]
-    fn eventbus_json_stream_codec_writes_single_message_field() {
-        let codec = EventbusJsonStreamCodec::default();
+    fn envelope_stream_codec_writes_single_message_field() {
+        let codec = EnvelopeStreamCodec::default();
         let message = sample_message();
         let expected = JsonCodec.encode(&message).expect("json encode");
         let fields = codec
@@ -458,11 +510,11 @@ mod stream_codec_tests {
     }
 
     #[test]
-    fn eventbus_json_stream_codec_decodes_existing_message_field() {
+    fn envelope_stream_codec_decodes_existing_message_field() {
         let message = sample_message();
         let bytes = JsonCodec.encode(&message).expect("json encode");
         let fields = HashMap::from([("message".to_string(), bytes)]);
-        let codec = EventbusJsonStreamCodec::default();
+        let codec = EnvelopeStreamCodec::default();
 
         let decoded = codec
             .decode_fields(
@@ -480,7 +532,7 @@ mod stream_codec_tests {
     }
 
     #[test]
-    fn eventbus_json_stream_codec_wraps_custom_core_codec() {
+    fn envelope_stream_codec_wraps_custom_core_codec() {
         #[derive(Debug)]
         struct ConstantCodec;
 
@@ -498,7 +550,7 @@ mod stream_codec_tests {
             }
         }
 
-        let codec = EventbusJsonStreamCodec::from_core_codec(Arc::new(ConstantCodec));
+        let codec = EnvelopeStreamCodec::from_core_codec(Arc::new(ConstantCodec));
         let fields = codec
             .encode_fields(
                 EncodeContext {
@@ -512,6 +564,28 @@ mod stream_codec_tests {
             fields,
             vec![("message".to_string(), b"constant-wire".to_vec())]
         );
+    }
+
+    #[test]
+    fn auto_detect_default_decodes_envelope_entries_regardless_of_features() {
+        let message = sample_message();
+        let fields = HashMap::from([(
+            "message".to_string(),
+            JsonCodec.encode(&message).expect("json encode"),
+        )]);
+        let codec = super::AutoDetectRedisStreamCodec::default();
+
+        let decoded = codec
+            .decode_fields(
+                DecodeContext {
+                    stream: "native.events",
+                    redis_id: "1-0",
+                },
+                &fields,
+            )
+            .expect("default auto-detect must decode envelope entries");
+
+        assert_eq!(decoded.uid, "msg-json");
     }
 }
 
@@ -814,8 +888,61 @@ mod watermill_stream_codec_tests {
             .expect("metadata field should be present");
         let decoded_metadata: HashMap<String, String> =
             rmp_serde::from_slice(encoded_metadata).expect("metadata should decode");
-        assert_eq!(decoded_metadata, sample_metadata());
+        // Typed fields absent from the headers are hoisted into metadata.
+        let mut expected_metadata = sample_metadata();
+        expected_metadata.insert(
+            HEADER_IDEMPOTENCY_KEY.to_string(),
+            "wm-encode-1".to_string(),
+        );
+        assert_eq!(decoded_metadata, expected_metadata);
         assert_eq!(fields.get("payload"), Some(&br#"{"ok":true}"#.to_vec()));
+    }
+
+    #[test]
+    fn watermill_stream_codec_encode_omits_reserved_uuid_header() {
+        let codec = WatermillStreamCodec;
+        let mut msg = sample_message();
+        msg.headers.insert(
+            "_watermill_message_uuid".to_string(),
+            "stale-uuid-from-previous-decode".to_string(),
+        );
+
+        let fields = codec
+            .encode_fields(
+                EncodeContext {
+                    stream: "billing.invoices",
+                },
+                &msg,
+            )
+            .expect("encode");
+
+        let fields = HashMap::<_, _>::from_iter(fields);
+        assert_eq!(
+            fields.get("_watermill_message_uuid"),
+            Some(&b"wm-encode-1".to_vec()),
+            "uuid field must come from msg.uid, not headers"
+        );
+        let decoded_metadata: HashMap<String, String> =
+            rmp_serde::from_slice(fields.get("metadata").expect("metadata"))
+                .expect("metadata should decode");
+        assert!(
+            !decoded_metadata.contains_key("_watermill_message_uuid"),
+            "reserved uuid key must not round-trip into metadata"
+        );
+    }
+
+    #[test]
+    fn watermill_stream_codec_derives_occurred_at_from_redis_entry_id() {
+        let codec = WatermillStreamCodec;
+        let decoded = codec
+            .decode_fields(decode_context(), &canonical_fields())
+            .expect("decode");
+
+        assert_eq!(
+            decoded.occurred_at,
+            chrono::DateTime::from_timestamp_millis(1_710_000_000_000).expect("timestamp"),
+            "occurred_at must come from the entry id, stable across redeliveries"
+        );
     }
 
     #[test]
@@ -885,7 +1012,7 @@ mod auto_detect_stream_codec_tests {
     use eventbus_core::{Codec, Message, Topic};
 
     use super::{
-        AutoDetectRedisStreamCodec, DecodeContext, EventbusJsonStreamCodec, JsonCodec,
+        AutoDetectRedisStreamCodec, DecodeContext, EnvelopeStreamCodec, JsonCodec,
         RedisStreamCodec, WatermillStreamCodec,
     };
 
@@ -915,7 +1042,7 @@ mod auto_detect_stream_codec_tests {
             JsonCodec.encode(&sample_message()).expect("json encode"),
         )]);
         let codec = AutoDetectRedisStreamCodec::new(vec![
-            Arc::new(EventbusJsonStreamCodec::default()),
+            Arc::new(EnvelopeStreamCodec::default()),
             Arc::new(WatermillStreamCodec),
         ]);
 
@@ -940,7 +1067,7 @@ mod auto_detect_stream_codec_tests {
             ("payload".to_string(), b"raw".to_vec()),
         ]);
         let codec = AutoDetectRedisStreamCodec::new(vec![
-            Arc::new(EventbusJsonStreamCodec::default()),
+            Arc::new(EnvelopeStreamCodec::default()),
             Arc::new(WatermillStreamCodec),
         ]);
 
@@ -970,7 +1097,7 @@ mod auto_detect_stream_codec_tests {
             ("payload".to_string(), b"raw-fallback".to_vec()),
         ]);
         let codec = AutoDetectRedisStreamCodec::new(vec![
-            Arc::new(EventbusJsonStreamCodec::default()),
+            Arc::new(EnvelopeStreamCodec::default()),
             Arc::new(WatermillStreamCodec),
         ]);
 
@@ -994,7 +1121,7 @@ mod auto_detect_stream_codec_tests {
             ("payload".to_string(), b"raw".to_vec()),
             ("unknown".to_string(), b"value".to_vec()),
         ]);
-        let codec = AutoDetectRedisStreamCodec::default();
+        let codec = AutoDetectRedisStreamCodec::with_watermill();
 
         let err = codec
             .decode_fields(
