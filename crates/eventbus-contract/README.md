@@ -14,6 +14,13 @@ This is the **facade crate**. It re-exports the contract traits from [`eventbus-
 eventbus-contract = { version = "0.2", features = ["redis"] }
 ```
 
+For Go Watermill Redis Stream compatibility, enable the facade feature:
+
+```toml
+[dependencies]
+eventbus-contract = { version = "0.2.1", features = ["redis-watermill"] }
+```
+
 ```rust
 use std::sync::Arc;
 
@@ -54,6 +61,7 @@ async fn main() -> Result<(), EventBusError> {
 |---|---|---|
 | `memory` | yes | `eventbus-memory` (in-process backend) |
 | `redis` | no | `eventbus-redis` (Redis Streams) |
+| `redis-watermill` | no | `eventbus-redis/watermill` for Go Watermill Redis Stream entries |
 | `tracing` | no | `tracing` instrumentation on hot paths |
 
 `outbox` and `integration` features are reserved for 0.3.0 — those trait
@@ -63,11 +71,11 @@ alongside a concrete impl crate (e.g. `eventbus-postgres-outbox`).
 
 ## Workspace
 
-| Crate | Purpose | Published in 0.2.0 |
+| Crate | Purpose | Published in 0.2.x |
 |---|---|:---:|
 | [`eventbus-core`](https://crates.io/crates/eventbus-core) | Contract traits + value types + generic `StreamBus` | ✅ |
 | [`eventbus-memory`](https://crates.io/crates/eventbus-memory) | In-process `StreamBackend` | ✅ |
-| [`eventbus-redis`](https://crates.io/crates/eventbus-redis) | Redis Streams `StreamBackend` + `JsonCodec` | ✅ |
+| [`eventbus-redis`](https://crates.io/crates/eventbus-redis) | Redis Streams `StreamBackend` + JSON/Watermill stream codecs | ✅ |
 | `eventbus-outbox` | Outbox + dispatcher traits | 🛑 0.3.0 (awaiting reference impl) |
 | `eventbus-integration` | DDD integration-event surface | 🛑 0.3.0 (awaiting reference impl) |
 | `eventbus-contract` (this crate) | Facade re-exporting the published crates | ✅ |

@@ -57,7 +57,7 @@ metadata                 = msgpack map<string,string>
 payload                  = raw bytes
 ```
 
-`_watermill_message_uuid` becomes `Message.uid` and the fallback idempotency key, `metadata` becomes `Message.headers`, `payload` becomes `Message.payload` without base64 or JSON decoding, and the subscribed Redis stream name becomes `Message.topic`.
+`_watermill_message_uuid` becomes `Message.uid` and the fallback idempotency key, `metadata` becomes `Message.headers`, `payload` becomes `Message.payload` without base64 or JSON decoding, and the subscribed Redis stream name becomes `Message.topic`. Empty `metadata` fields are accepted as empty metadata. When writing with `WatermillStreamCodec`, typed `Message` fields such as `content_type`, `event_version`, and `idempotency_key` are copied into metadata unless an explicit header already exists.
 
 For mixed streams where the read side should accept either eventbus JSON entries or Watermill entries, opt in per stream:
 
@@ -68,7 +68,7 @@ backend.set_auto_detect_read_stream("mapset.mixed");
 # }
 ```
 
-Auto-detect is read-only. Writes still use the stream write codec, defaulting to the eventbus JSON `"message"` field.
+Auto-detect is read-only. It tries matching codecs in order and can continue to later codecs if an earlier matching codec fails to decode. Writes still use the stream write codec, defaulting to the eventbus JSON `"message"` field.
 
 ## Connection / TLS / auth
 

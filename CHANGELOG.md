@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.2.1 - 2026-06-12
+
+Patch release focused on Redis Stream interoperability and publish readiness.
+
+### Redis
+
+- Added Redis field-level stream codecs so the Redis backend can read and write
+  formats beyond the default eventbus JSON `message` field.
+- Added the optional `watermill` feature with `WatermillStreamCodec` for Go
+  Watermill Redis Stream entries (`_watermill_message_uuid`, `metadata`,
+  `payload`).
+- Added stream/group/subscription read codec registration plus stream-level
+  write codec registration on `RedisBackend`.
+- Added Watermill-aware auto-detection for mixed eventbus JSON and Watermill
+  streams.
+- Hardened Redis entry decoding by enforcing raw field-size limits while
+  converting Redis fields, before handing the field map to codecs.
+- Fixed Watermill edge cases: empty `metadata` fields are accepted, typed
+  `Message` fields are written into Watermill metadata, and auto-detect can
+  continue after one matching codec fails to decode.
+
+### Facade
+
+- Added the `redis-watermill` feature to `eventbus-contract`, forwarding to
+  `eventbus-redis/watermill`.
+
 ## 0.2.0 — 2026-05-07
 
 Breaking refactor. See [`MIGRATION-0.2.md`](./MIGRATION-0.2.md).

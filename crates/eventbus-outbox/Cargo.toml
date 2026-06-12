@@ -8,7 +8,7 @@ rust-version.workspace = true
 description = "Outbox + Dispatcher + DeadLetterStore traits"
 
 [dependencies]
-eventbus-core = { path = "../eventbus-core", version = "0.2.0" }
+eventbus-core = { path = "../eventbus-core", version = "0.2.1" }
 bytes.workspace = true
 chrono.workspace = true
 serde.workspace = true

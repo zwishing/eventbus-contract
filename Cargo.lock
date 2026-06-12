@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "eventbus-contract"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "chrono",
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "eventbus-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "bytes",
@@ -361,14 +361,14 @@ dependencies = [
 
 [[package]]
 name = "eventbus-integration"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "eventbus-core",
 ]
 
 [[package]]
 name = "eventbus-memory"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "chrono",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "eventbus-outbox"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "chrono",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "eventbus-redis"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "chrono",

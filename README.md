@@ -8,17 +8,25 @@ in-process backend for tests.
 eventbus-contract = { version = "0.2", features = ["redis"] }
 ```
 
+Enable Watermill Redis Stream compatibility through the facade when consuming
+Go Watermill streams:
+
+```toml
+[dependencies]
+eventbus-contract = { version = "0.2.1", features = ["redis-watermill"] }
+```
+
 ```rust
 use eventbus_contract::prelude::*;
 ```
 
 ## Workspace layout
 
-| Crate | What it provides | Published in 0.2.0 |
+| Crate | What it provides | Published in 0.2.x |
 |---|---|:---:|
 | `eventbus-core` | Object-safe traits (`Publisher`, `Subscriber`, `Handler`, `Delivery`, `DeliveryControl`), value types, generic `StreamBus`. | ✅ |
 | `eventbus-memory` | In-process `StreamBackend` behind the default-on `test-utils` feature. | ✅ |
-| `eventbus-redis` | Production `RedisBackend` over `XADD` / `XREADGROUP` / `XACK` / `XAUTOCLAIM`. | ✅ |
+| `eventbus-redis` | Production `RedisBackend` over `XADD` / `XREADGROUP` / `XACK` / `XAUTOCLAIM`, with optional Watermill Redis Stream codecs. | ✅ |
 | `eventbus-outbox` | Transactional outbox + dispatcher + dead-letter + idempotency traits. | 🛑 0.3.0 (awaiting reference impl) |
 | `eventbus-integration` | DDD integration-event helpers (`IntegrationEvent`, `MessageFactory`, `EventPublisher`). | 🛑 0.3.0 (awaiting reference impl) |
 | `eventbus-contract` | Facade — re-exports the published crates behind feature flags. | ✅ |
@@ -27,6 +35,7 @@ use eventbus_contract::prelude::*;
 
 - `memory` (default) — in-process backend for tests / dev.
 - `redis` — Redis Streams backend.
+- `redis-watermill` - Redis Streams backend plus Watermill canonical entry decoding.
 - `tracing` — `tracing` instrumentation on hot paths.
 
 `outbox` and `integration` features are reserved for 0.3.0. The trait crates
