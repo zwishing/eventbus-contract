@@ -101,6 +101,75 @@ impl RedisStreamCodec for EventbusJsonStreamCodec {
     }
 }
 
+#[derive(Clone)]
+pub struct AutoDetectRedisStreamCodec {
+    codecs: Vec<Arc<dyn RedisStreamCodec>>,
+}
+
+impl AutoDetectRedisStreamCodec {
+    pub fn new(codecs: Vec<Arc<dyn RedisStreamCodec>>) -> Self {
+        Self { codecs }
+    }
+}
+
+#[cfg(feature = "watermill")]
+impl Default for AutoDetectRedisStreamCodec {
+    fn default() -> Self {
+        Self::new(vec![
+            Arc::new(EventbusJsonStreamCodec::default()),
+            Arc::new(WatermillStreamCodec),
+        ])
+    }
+}
+
+impl std::fmt::Debug for AutoDetectRedisStreamCodec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.codecs.iter().map(|codec| codec.name()).collect();
+        f.debug_struct("AutoDetectRedisStreamCodec")
+            .field("codecs", &names)
+            .finish()
+    }
+}
+
+impl RedisStreamCodec for AutoDetectRedisStreamCodec {
+    fn name(&self) -> &str {
+        "auto-detect"
+    }
+
+    fn encode_fields(
+        &self,
+        _ctx: EncodeContext<'_>,
+        _msg: &Message,
+    ) -> Result<Vec<(String, Vec<u8>)>, EventBusError> {
+        Err(EventBusError::Validation(
+            "auto-detect Redis stream codec cannot be used for writes".into(),
+        ))
+    }
+
+    fn decode_fields(
+        &self,
+        ctx: DecodeContext<'_>,
+        fields: &RedisStreamFields,
+    ) -> Result<Message, EventBusError> {
+        for codec in &self.codecs {
+            if codec.can_decode(fields) {
+                return codec.decode_fields(ctx, fields);
+            }
+        }
+
+        let mut names: Vec<&str> = fields.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        Err(EventBusError::Serialization(format!(
+            "no RedisStreamCodec could decode entry fields: [{}]",
+            names.join(", ")
+        )))
+    }
+
+    fn can_decode(&self, fields: &RedisStreamFields) -> bool {
+        self.codecs.iter().any(|codec| codec.can_decode(fields))
+    }
+}
+
 #[cfg(feature = "watermill")]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WatermillStreamCodec;
@@ -685,5 +754,130 @@ mod watermill_stream_codec_tests {
             "_watermill_message_uuid".to_string(),
             b"wm-only".to_vec(),
         )])));
+    }
+}
+
+#[cfg(all(test, feature = "watermill"))]
+mod auto_detect_stream_codec_tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use chrono::Utc;
+    use eventbus_core::{Codec, Message, Topic};
+
+    use super::{
+        AutoDetectRedisStreamCodec, DecodeContext, EventbusJsonStreamCodec, JsonCodec,
+        RedisStreamCodec, WatermillStreamCodec,
+    };
+
+    fn sample_message() -> Message {
+        Message {
+            uid: "json-id".into(),
+            topic: Topic::new("native.events").expect("topic"),
+            key: String::new(),
+            kind: "native.kind".into(),
+            source: "test".into(),
+            occurred_at: Utc::now(),
+            headers: HashMap::new(),
+            payload: bytes::Bytes::from_static(b"json-payload"),
+            content_type: None,
+            event_version: None,
+            idempotency_key: None,
+            expires_at: None,
+            trace_uid: None,
+            correlation_uid: None,
+        }
+    }
+
+    #[test]
+    fn auto_detect_decodes_eventbus_json_before_watermill() {
+        let fields = HashMap::from([(
+            "message".to_string(),
+            JsonCodec.encode(&sample_message()).expect("json encode"),
+        )]);
+        let codec = AutoDetectRedisStreamCodec::new(vec![
+            Arc::new(EventbusJsonStreamCodec::default()),
+            Arc::new(WatermillStreamCodec),
+        ]);
+
+        let decoded = codec
+            .decode_fields(
+                DecodeContext {
+                    stream: "native.events",
+                    redis_id: "1-0",
+                },
+                &fields,
+            )
+            .expect("auto decode json");
+
+        assert_eq!(decoded.uid, "json-id");
+        assert_eq!(decoded.payload, bytes::Bytes::from_static(b"json-payload"));
+    }
+
+    #[test]
+    fn auto_detect_decodes_watermill_when_watermill_fields_exist() {
+        let fields = HashMap::from([
+            ("_watermill_message_uuid".to_string(), b"wm-auto".to_vec()),
+            ("payload".to_string(), b"raw".to_vec()),
+        ]);
+        let codec = AutoDetectRedisStreamCodec::new(vec![
+            Arc::new(EventbusJsonStreamCodec::default()),
+            Arc::new(WatermillStreamCodec),
+        ]);
+
+        let decoded = codec
+            .decode_fields(
+                DecodeContext {
+                    stream: "mapset.auto",
+                    redis_id: "2-0",
+                },
+                &fields,
+            )
+            .expect("auto decode watermill");
+
+        assert_eq!(decoded.uid, "wm-auto");
+        assert_eq!(decoded.topic.as_str(), "mapset.auto");
+        assert_eq!(decoded.payload, bytes::Bytes::from_static(b"raw"));
+    }
+
+    #[test]
+    fn auto_detect_reports_field_names_when_no_codec_matches() {
+        let fields = HashMap::from([
+            ("payload".to_string(), b"raw".to_vec()),
+            ("unknown".to_string(), b"value".to_vec()),
+        ]);
+        let codec = AutoDetectRedisStreamCodec::default();
+
+        let err = codec
+            .decode_fields(
+                DecodeContext {
+                    stream: "unknown.stream",
+                    redis_id: "3-0",
+                },
+                &fields,
+            )
+            .expect_err("unknown fields should fail");
+
+        let message = err.to_string();
+        assert!(message.contains("payload"), "unexpected error: {err}");
+        assert!(message.contains("unknown"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn auto_detect_is_decode_only() {
+        let codec = AutoDetectRedisStreamCodec::default();
+        let err = codec
+            .encode_fields(
+                super::EncodeContext {
+                    stream: "native.events",
+                },
+                &sample_message(),
+            )
+            .expect_err("auto-detect writes should fail");
+
+        assert!(
+            err.to_string().contains("writes"),
+            "unexpected error: {err}"
+        );
     }
 }

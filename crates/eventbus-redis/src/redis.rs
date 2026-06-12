@@ -246,6 +246,23 @@ impl RedisBackend {
     pub fn set_stream_write_codec(&self, stream: &str, codec: Arc<dyn RedisStreamCodec>) {
         self.registry.set_stream_write_codec(stream, codec);
     }
+
+    /// Register [`crate::codec::WatermillStreamCodec`] as the read codec for `stream`.
+    #[cfg(feature = "watermill")]
+    pub fn set_watermill_read_stream(&self, stream: impl Into<String>) {
+        let stream = stream.into();
+        self.set_stream_read_codec(&stream, Arc::new(crate::codec::WatermillStreamCodec));
+    }
+
+    /// Register [`crate::codec::AutoDetectRedisStreamCodec`] as the read codec for `stream`.
+    #[cfg(feature = "watermill")]
+    pub fn set_auto_detect_read_stream(&self, stream: impl Into<String>) {
+        let stream = stream.into();
+        self.set_stream_read_codec(
+            &stream,
+            Arc::new(crate::codec::AutoDetectRedisStreamCodec::default()),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -787,6 +804,134 @@ mod tests {
         assert_eq!(
             claimed.message.payload,
             bytes::Bytes::from_static(b"raw-payload")
+        );
+    }
+
+    #[cfg(feature = "watermill")]
+    #[test]
+    fn decode_entry_uses_stream_specific_codec_for_watermill_without_message_field() {
+        let metadata = HashMap::<String, String>::new();
+        let entry = StreamId {
+            id: "10-0".into(),
+            map: HashMap::from([
+                (
+                    "_watermill_message_uuid".into(),
+                    Value::BulkString(b"wm-stream-specific".to_vec()),
+                ),
+                (
+                    "metadata".into(),
+                    Value::BulkString(rmp_serde::to_vec_named(&metadata).expect("metadata")),
+                ),
+                (
+                    "payload".into(),
+                    Value::BulkString(b"mosaic-bytes".to_vec()),
+                ),
+            ]),
+            milliseconds_elapsed_from_delivery: None,
+            delivered_count: None,
+        };
+
+        let decoded = decode_entry(
+            "mapset.mosaic",
+            &entry,
+            false,
+            Arc::new(crate::codec::WatermillStreamCodec),
+        );
+
+        let claimed = match decoded {
+            FetchedEntry::Decoded(c) => c,
+            FetchedEntry::Malformed { error, .. } => panic!("expected decoded, got {error:?}"),
+        };
+        assert_eq!(claimed.message.uid, "wm-stream-specific");
+        assert_eq!(claimed.message.topic.as_str(), "mapset.mosaic");
+        assert_eq!(
+            claimed.message.payload,
+            bytes::Bytes::from_static(b"mosaic-bytes")
+        );
+        assert_eq!(
+            claimed.message.idempotency_key.as_deref(),
+            Some("wm-stream-specific")
+        );
+    }
+
+    #[cfg(feature = "watermill")]
+    #[test]
+    fn decode_entry_uses_auto_detect_codec_for_watermill_without_message_field() {
+        let entry = StreamId {
+            id: "10-1".into(),
+            map: HashMap::from([
+                (
+                    "_watermill_message_uuid".into(),
+                    Value::BulkString(b"wm-auto-entry".to_vec()),
+                ),
+                ("payload".into(), Value::BulkString(b"mosaic-auto".to_vec())),
+            ]),
+            milliseconds_elapsed_from_delivery: None,
+            delivered_count: None,
+        };
+
+        let decoded = decode_entry(
+            "mapset.mosaic",
+            &entry,
+            false,
+            Arc::new(crate::codec::AutoDetectRedisStreamCodec::default()),
+        );
+
+        let claimed = match decoded {
+            FetchedEntry::Decoded(c) => c,
+            FetchedEntry::Malformed { error, .. } => panic!("expected decoded, got {error:?}"),
+        };
+        assert_eq!(claimed.message.uid, "wm-auto-entry");
+        assert_eq!(claimed.message.topic.as_str(), "mapset.mosaic");
+        assert_eq!(
+            claimed.message.payload,
+            bytes::Bytes::from_static(b"mosaic-auto")
+        );
+    }
+
+    #[test]
+    fn decode_entry_preserves_eventbus_json_with_default_codec() {
+        let codec = EventbusJsonStreamCodec::default();
+        let mut fields = codec
+            .encode_fields(
+                crate::codec::EncodeContext {
+                    stream: "native.events",
+                },
+                &Message {
+                    uid: "native-id".into(),
+                    topic: eventbus_core::Topic::new("native.events").expect("topic"),
+                    key: String::new(),
+                    kind: "native.kind".into(),
+                    source: "native".into(),
+                    occurred_at: Utc::now(),
+                    headers: HashMap::new(),
+                    payload: bytes::Bytes::from_static(b"native-payload"),
+                    content_type: None,
+                    event_version: None,
+                    idempotency_key: None,
+                    expires_at: None,
+                    trace_uid: None,
+                    correlation_uid: None,
+                },
+            )
+            .expect("encode fields");
+        let (_, bytes) = fields.remove(0);
+        let entry = StreamId {
+            id: "11-0".into(),
+            map: HashMap::from([("message".into(), Value::BulkString(bytes))]),
+            milliseconds_elapsed_from_delivery: None,
+            delivered_count: None,
+        };
+
+        let decoded = decode_entry("native.events", &entry, false, Arc::new(codec));
+        let claimed = match decoded {
+            FetchedEntry::Decoded(c) => c,
+            FetchedEntry::Malformed { error, .. } => panic!("expected decoded, got {error:?}"),
+        };
+        assert_eq!(claimed.message.uid, "native-id");
+        assert_eq!(
+            claimed.message.payload,
+            bytes::Bytes::from_static(b"native-payload")
         );
     }
 
