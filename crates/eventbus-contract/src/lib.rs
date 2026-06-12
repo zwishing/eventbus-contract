@@ -7,6 +7,8 @@
 //!   tests, examples, and local development.
 //! - `redis`: production [`RedisBackend`](redis) over Redis Streams /
 //!   consumer groups (requires the `redis` server).
+//! - `redis-watermill`: extends the Redis backend with Watermill canonical
+//!   Redis Stream entry decoding for streams that opt in.
 //! - `tracing`: enables `tracing` instrumentation on hot paths.
 //!
 //! `outbox` and `integration` features are reserved for 0.3.0 — those trait
@@ -17,6 +19,13 @@
 //! ```toml
 //! [dependencies]
 //! eventbus-contract = { version = "0.2", features = ["redis"] }
+//! ```
+//!
+//! Enable Watermill Redis stream compatibility only when needed:
+//!
+//! ```toml
+//! [dependencies]
+//! eventbus-contract = { version = "0.2", features = ["redis-watermill"] }
 //! ```
 //!
 //! See [`MIGRATION-0.2.md`](https://github.com/zwishing/eventbus-contract/blob/main/MIGRATION-0.2.md)

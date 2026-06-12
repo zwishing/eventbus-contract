@@ -4,6 +4,12 @@
 //! Currently:
 //! - [`JsonCodec`]: wire-compatible with the Go `StreamBus`. Encodes a
 //!   `{"message": {...}}` envelope (matching `redisStreamPayload` in Go).
+//! - [`EventbusJsonStreamCodec`]: Redis field-map wrapper for `JsonCodec` or
+//!   another core byte-level codec.
+//! - [`AutoDetectRedisStreamCodec`]: read-only field-map codec that tries
+//!   configured Redis stream codecs in order.
+//! - `WatermillStreamCodec`: optional `watermill` feature codec for Go
+//!   Watermill canonical Redis Stream entries.
 
 use std::collections::HashMap;
 use std::sync::Arc;
