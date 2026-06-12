@@ -13,6 +13,7 @@ categories = ["asynchronous", "network-programming"]
 default = ["memory"]
 memory = ["dep:eventbus-memory"]
 redis = ["dep:eventbus-redis"]
+redis-watermill = ["redis", "eventbus-redis/watermill"]
 tracing = ["eventbus-core/tracing"]
 # `outbox` and `integration` are workspace-only in 0.2.0 — the trait crates
 # are not yet published to crates.io because they have no reference impl.
