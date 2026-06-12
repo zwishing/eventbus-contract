@@ -14,9 +14,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(feature = "watermill")]
-use eventbus_core::HEADER_IDEMPOTENCY_KEY;
 use eventbus_core::{Codec, EventBusError, Message};
+#[cfg(feature = "watermill")]
+use eventbus_core::{HEADER_CONTENT_TYPE, HEADER_EVENT_VERSION, HEADER_IDEMPOTENCY_KEY};
 
 pub use json::JsonCodec;
 
@@ -157,10 +157,23 @@ impl RedisStreamCodec for AutoDetectRedisStreamCodec {
         ctx: DecodeContext<'_>,
         fields: &RedisStreamFields,
     ) -> Result<Message, EventBusError> {
+        let mut decode_errors = Vec::new();
         for codec in &self.codecs {
             if codec.can_decode(fields) {
-                return codec.decode_fields(ctx, fields);
+                match codec.decode_fields(ctx, fields) {
+                    Ok(message) => return Ok(message),
+                    Err(error) => {
+                        decode_errors.push(format!("{}: {error}", codec.name()));
+                    }
+                }
             }
+        }
+
+        if !decode_errors.is_empty() {
+            return Err(EventBusError::Serialization(format!(
+                "no RedisStreamCodec could decode matching entry fields: {}",
+                decode_errors.join("; ")
+            )));
         }
 
         let mut names: Vec<&str> = fields.keys().map(String::as_str).collect();
@@ -191,7 +204,7 @@ impl RedisStreamCodec for WatermillStreamCodec {
         _ctx: EncodeContext<'_>,
         msg: &Message,
     ) -> Result<Vec<(String, Vec<u8>)>, EventBusError> {
-        let metadata = rmp_serde::to_vec_named(&msg.headers)
+        let metadata = rmp_serde::to_vec_named(&watermill_metadata(msg))
             .map_err(|err| EventBusError::source("watermill metadata encode", err))?;
 
         Ok(vec![
@@ -252,6 +265,29 @@ impl RedisStreamCodec for WatermillStreamCodec {
 }
 
 #[cfg(feature = "watermill")]
+fn watermill_metadata(msg: &Message) -> HashMap<String, String> {
+    let mut metadata = msg.headers.clone();
+
+    if let Some(content_type) = &msg.content_type {
+        metadata
+            .entry(HEADER_CONTENT_TYPE.to_string())
+            .or_insert_with(|| content_type.clone());
+    }
+    if let Some(event_version) = &msg.event_version {
+        metadata
+            .entry(HEADER_EVENT_VERSION.to_string())
+            .or_insert_with(|| event_version.clone());
+    }
+    if let Some(idempotency_key) = &msg.idempotency_key {
+        metadata
+            .entry(HEADER_IDEMPOTENCY_KEY.to_string())
+            .or_insert_with(|| idempotency_key.clone());
+    }
+
+    metadata
+}
+
+#[cfg(feature = "watermill")]
 fn first_header(headers: &HashMap<String, String>, names: &[&str]) -> Option<String> {
     names.iter().find_map(|name| headers.get(*name).cloned())
 }
@@ -272,6 +308,7 @@ fn decode_watermill_metadata(
     fields: &RedisStreamFields,
 ) -> Result<HashMap<String, String>, EventBusError> {
     match fields.get("metadata") {
+        Some(metadata) if metadata.is_empty() => Ok(HashMap::new()),
         Some(metadata) => rmp_serde::from_slice(metadata)
             .map_err(|err| EventBusError::source("watermill metadata decode", err)),
         None => Ok(HashMap::new()),
@@ -483,7 +520,9 @@ mod watermill_stream_codec_tests {
     use std::collections::HashMap;
 
     use bytes::Bytes;
-    use eventbus_core::{Message, HEADER_IDEMPOTENCY_KEY};
+    use eventbus_core::{
+        Message, HEADER_CONTENT_TYPE, HEADER_EVENT_VERSION, HEADER_IDEMPOTENCY_KEY,
+    };
     use rmp_serde::to_vec_named;
 
     use super::{
@@ -604,6 +643,35 @@ mod watermill_stream_codec_tests {
             Some("wm-no-meta")
         );
         assert_eq!(decoded.idempotency_key.as_deref(), Some("wm-no-meta"));
+        assert_eq!(decoded.payload, Bytes::from_static(b"raw-payload"));
+    }
+
+    #[test]
+    fn watermill_stream_codec_decodes_empty_metadata_field_using_defaults() {
+        let codec = WatermillStreamCodec;
+        let fields = HashMap::from([
+            (
+                "_watermill_message_uuid".to_string(),
+                b"wm-empty-meta".to_vec(),
+            ),
+            ("metadata".to_string(), Vec::new()),
+            ("payload".to_string(), b"raw-payload".to_vec()),
+        ]);
+
+        let decoded = codec
+            .decode_fields(decode_context(), &fields)
+            .expect("decode empty metadata");
+
+        assert_eq!(decoded.uid, "wm-empty-meta");
+        assert_eq!(decoded.kind, "watermill.message");
+        assert_eq!(decoded.source, "watermill");
+        assert_eq!(
+            decoded
+                .headers
+                .get(HEADER_IDEMPOTENCY_KEY)
+                .map(String::as_str),
+            Some("wm-empty-meta")
+        );
         assert_eq!(decoded.payload, Bytes::from_static(b"raw-payload"));
     }
 
@@ -751,6 +819,51 @@ mod watermill_stream_codec_tests {
     }
 
     #[test]
+    fn watermill_stream_codec_writes_typed_fields_into_metadata() {
+        let codec = WatermillStreamCodec;
+        let mut msg = sample_message();
+        msg.headers = HashMap::new();
+        msg.content_type = Some("application/cloudevents+json".into());
+        msg.event_version = Some("v9".into());
+        msg.idempotency_key = Some("typed-idem".into());
+
+        let fields = codec
+            .encode_fields(
+                EncodeContext {
+                    stream: "billing.invoices",
+                },
+                &msg,
+            )
+            .expect("encode");
+
+        let fields = HashMap::<_, _>::from_iter(fields);
+        let encoded_metadata = fields
+            .get("metadata")
+            .expect("metadata field should be present");
+        let decoded_metadata: HashMap<String, String> =
+            rmp_serde::from_slice(encoded_metadata).expect("metadata should decode");
+
+        assert_eq!(
+            decoded_metadata
+                .get(HEADER_CONTENT_TYPE)
+                .map(String::as_str),
+            Some("application/cloudevents+json")
+        );
+        assert_eq!(
+            decoded_metadata
+                .get(HEADER_EVENT_VERSION)
+                .map(String::as_str),
+            Some("v9")
+        );
+        assert_eq!(
+            decoded_metadata
+                .get(HEADER_IDEMPOTENCY_KEY)
+                .map(String::as_str),
+            Some("typed-idem")
+        );
+    }
+
+    #[test]
     fn watermill_stream_codec_detects_canonical_entries() {
         let codec = WatermillStreamCodec;
         let fields = canonical_fields();
@@ -844,6 +957,35 @@ mod auto_detect_stream_codec_tests {
         assert_eq!(decoded.uid, "wm-auto");
         assert_eq!(decoded.topic.as_str(), "mapset.auto");
         assert_eq!(decoded.payload, bytes::Bytes::from_static(b"raw"));
+    }
+
+    #[test]
+    fn auto_detect_continues_after_matching_codec_decode_error() {
+        let fields = HashMap::from([
+            ("message".to_string(), b"not-json".to_vec()),
+            (
+                "_watermill_message_uuid".to_string(),
+                b"wm-fallback".to_vec(),
+            ),
+            ("payload".to_string(), b"raw-fallback".to_vec()),
+        ]);
+        let codec = AutoDetectRedisStreamCodec::new(vec![
+            Arc::new(EventbusJsonStreamCodec::default()),
+            Arc::new(WatermillStreamCodec),
+        ]);
+
+        let decoded = codec
+            .decode_fields(
+                DecodeContext {
+                    stream: "mapset.auto",
+                    redis_id: "2-1",
+                },
+                &fields,
+            )
+            .expect("auto decode fallback");
+
+        assert_eq!(decoded.uid, "wm-fallback");
+        assert_eq!(decoded.payload, bytes::Bytes::from_static(b"raw-fallback"));
     }
 
     #[test]

@@ -481,33 +481,6 @@ fn decode_entry(
         Err(error) => return FetchedEntry::Malformed { id, error },
     };
 
-    let mut total_raw_bytes = 0usize;
-    for (field, bytes) in &fields {
-        if bytes.len() > MAX_RAW_PAYLOAD_BYTES {
-            return FetchedEntry::Malformed {
-                id: id.clone(),
-                error: EventBusError::Serialization(format!(
-                    "entry {id} field '{field}' raw payload {} bytes exceeds MAX_RAW_PAYLOAD_BYTES {}",
-                    bytes.len(),
-                    MAX_RAW_PAYLOAD_BYTES,
-                )),
-            };
-        }
-
-        total_raw_bytes = total_raw_bytes.saturating_add(bytes.len());
-    }
-
-    if total_raw_bytes > MAX_RAW_PAYLOAD_BYTES {
-        return FetchedEntry::Malformed {
-            id: id.clone(),
-            error: EventBusError::Serialization(format!(
-                "entry {id} raw payload {total_raw_bytes} bytes exceeds MAX_RAW_PAYLOAD_BYTES {} across {} fields",
-                MAX_RAW_PAYLOAD_BYTES,
-                fields.len(),
-            )),
-        };
-    }
-
     let mut message = match codec.decode_fields(
         DecodeContext {
             stream,
@@ -576,20 +549,80 @@ fn parse_autoclaim(
 
 fn entry_fields(entry: &StreamId) -> Result<RedisStreamFields, EventBusError> {
     let mut fields = RedisStreamFields::with_capacity(entry.map.len());
+    let mut total_raw_bytes = 0usize;
+
     for (key, val) in &entry.map {
-        let bytes = redis_value_to_bytes(val.clone())
-            .map_err(|err| EventBusError::source(format!("read stream field {key}"), err))?;
+        let bytes = match val {
+            Value::BulkString(bytes) => {
+                check_raw_field_size(
+                    &entry.id,
+                    key,
+                    bytes.len(),
+                    &mut total_raw_bytes,
+                    fields.len() + 1,
+                )?;
+                bytes.clone()
+            }
+            Value::SimpleString(s) => {
+                check_raw_field_size(
+                    &entry.id,
+                    key,
+                    s.len(),
+                    &mut total_raw_bytes,
+                    fields.len() + 1,
+                )?;
+                s.as_bytes().to_vec()
+            }
+            other => {
+                let bytes = redis_value_to_bytes(other).map_err(|err| {
+                    EventBusError::source(format!("read stream field {key}"), err)
+                })?;
+                check_raw_field_size(
+                    &entry.id,
+                    key,
+                    bytes.len(),
+                    &mut total_raw_bytes,
+                    fields.len() + 1,
+                )?;
+                bytes
+            }
+        };
         fields.insert(key.clone(), bytes);
     }
+
     Ok(fields)
 }
 
-fn redis_value_to_bytes(value: Value) -> Result<Vec<u8>, redis::RedisError> {
+fn check_raw_field_size(
+    id: &str,
+    field: &str,
+    field_bytes: usize,
+    total_raw_bytes: &mut usize,
+    field_count: usize,
+) -> Result<(), EventBusError> {
+    if field_bytes > MAX_RAW_PAYLOAD_BYTES {
+        return Err(EventBusError::Serialization(format!(
+            "entry {id} field '{field}' raw payload {field_bytes} bytes exceeds MAX_RAW_PAYLOAD_BYTES {MAX_RAW_PAYLOAD_BYTES}",
+        )));
+    }
+
+    *total_raw_bytes = (*total_raw_bytes).saturating_add(field_bytes);
+    if *total_raw_bytes > MAX_RAW_PAYLOAD_BYTES {
+        let total = *total_raw_bytes;
+        return Err(EventBusError::Serialization(format!(
+            "entry {id} raw payload {total} bytes exceeds MAX_RAW_PAYLOAD_BYTES {MAX_RAW_PAYLOAD_BYTES} across {field_count} fields",
+        )));
+    }
+
+    Ok(())
+}
+
+fn redis_value_to_bytes(value: &Value) -> Result<Vec<u8>, redis::RedisError> {
     match value {
-        Value::BulkString(b) => Ok(b),
-        Value::SimpleString(s) => Ok(s.into_bytes()),
+        Value::BulkString(b) => Ok(b.clone()),
+        Value::SimpleString(s) => Ok(s.as_bytes().to_vec()),
         other => {
-            let s: String = FromRedisValue::from_redis_value(other)?;
+            let s: String = FromRedisValue::from_redis_value(other.clone())?;
             Ok(s.into_bytes())
         }
     }
@@ -986,6 +1019,46 @@ mod tests {
             }
             FetchedEntry::Decoded(_) => panic!("expected malformed oversize entry"),
         }
+    }
+
+    #[test]
+    fn entry_fields_rejects_single_field_over_limit() {
+        let entry = StreamId {
+            id: "oversize-single-0".into(),
+            map: HashMap::from([(
+                "payload".into(),
+                Value::BulkString(vec![0; MAX_RAW_PAYLOAD_BYTES + 1]),
+            )]),
+            milliseconds_elapsed_from_delivery: None,
+            delivered_count: None,
+        };
+
+        let err = entry_fields(&entry).expect_err("oversize field should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("payload"), "unexpected error: {err}");
+        assert!(
+            msg.contains("MAX_RAW_PAYLOAD_BYTES"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn entry_fields_rejects_total_field_bytes_over_limit() {
+        let half_plus_one = (MAX_RAW_PAYLOAD_BYTES / 2) + 1;
+        let entry = StreamId {
+            id: "oversize-total-0".into(),
+            map: HashMap::from([
+                ("a".into(), Value::BulkString(vec![0; half_plus_one])),
+                ("b".into(), Value::BulkString(vec![0; half_plus_one])),
+            ]),
+            milliseconds_elapsed_from_delivery: None,
+            delivered_count: None,
+        };
+
+        let err = entry_fields(&entry).expect_err("oversize total should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("raw payload"), "unexpected error: {err}");
+        assert!(msg.contains("2 fields"), "unexpected error: {err}");
     }
 
     #[test]
