@@ -2,3 +2,5 @@
 .omx/
 .idea/
 .DS_Store
+.gitnexus/
+.codegraph/
