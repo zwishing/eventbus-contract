@@ -13,7 +13,7 @@ members = [
 version = "0.2.1"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/zwishing/eventbus-contract"
+repository = "https://github.com/mapseekai/eventbus-contract"
 rust-version = "1.82"
 
 [workspace.dependencies]
