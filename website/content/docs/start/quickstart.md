@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             source: "auth-service".to_string(),
             occurred_at: Utc::now(),
             headers: Headers::new(),
-            payload: bytes::Bytes::from_static(br#"{\"user_id\":42}"#),
+            payload: bytes::Bytes::from_static(br#"{"user_id":42}"#),
             content_type: Some("application/json".to_string()),
             event_version: Some("1.0".to_string()),
             idempotency_key: Some("reg-user-42".to_string()),

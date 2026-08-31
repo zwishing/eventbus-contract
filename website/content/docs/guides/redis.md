@@ -10,6 +10,8 @@ Redis 后端需要 Redis 服务和 facade crate 的 `redis` Feature：
 ```toml
 [dependencies]
 eventbus-contract = { version = "0.2.1", features = ["redis"] }
+redis = { version = "1", features = ["tokio-comp", "streams"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 ## 建立连接
@@ -19,9 +21,11 @@ JSON codec 包装 `RedisBackend` 并创建 `StreamBus`；精确签名以
 [docs.rs](https://docs.rs/eventbus-redis) 为准。
 
 ```rust
+use eventbus_contract::core::stream::StreamBusOptions;
+
 let client = redis::Client::open(redis_url.as_str())?;
 let connection = client.get_multiplexed_async_connection().await?;
-let bus = eventbus_redis::stream_bus_from_connection(
+let bus = eventbus_contract::redis::stream_bus_from_connection(
     connection,
     StreamBusOptions::default(),
 )?;
