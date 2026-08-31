@@ -57,5 +57,12 @@ require_text "${public_dir}/docs/start/installation/index.md" "redis-watermill"
 require_text "${public_dir}/docs/start/quickstart/index.md" "AckMode::Manual"
 require_text "${public_dir}/docs/start/quickstart/index.md" "先订阅，再发布"
 require_text "${public_dir}/llms.txt" "五分钟快速开始"
+require_file "${public_dir}/docs/guides/memory/index.html"
+require_file "${public_dir}/docs/guides/redis/index.html"
+require_file "${public_dir}/docs/guides/watermill/index.html"
+require_file "${public_dir}/docs/guides/competing-consumers/index.html"
+require_text "${public_dir}/docs/guides/redis/index.md" "stream_bus_from_connection"
+require_text "${public_dir}/docs/guides/watermill/index.md" "redis-watermill"
+require_text "${public_dir}/docs/guides/competing-consumers/index.md" "max_in_flight"
 
 printf 'verify-site: baseline contract passed\n'
