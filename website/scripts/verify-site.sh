@@ -75,4 +75,19 @@ require_text "${public_dir}/docs/concepts/delivery/index.md" "没有配置 dead_
 require_text "${public_dir}/docs/concepts/guarantees-idempotency/index.md" "PublishConfirmation::Persisted"
 require_text "${public_dir}/docs/concepts/ordering-backpressure/index.md" "max_pending_acks >= max_in_flight > 0"
 
+require_file "${public_dir}/docs/reference/crates-features/index.html"
+require_file "${public_dir}/docs/reference/configuration/index.html"
+require_file "${public_dir}/docs/reference/errors/index.html"
+require_file "${public_dir}/docs/reference/examples-commands/index.html"
+require_file "${public_dir}/docs/contributing/workspace-architecture/index.html"
+require_file "${public_dir}/docs/contributing/backend/index.html"
+require_file "${public_dir}/docs/contributing/testing/index.html"
+require_file "${public_dir}/docs/contributing/release/index.html"
+require_text "${public_dir}/docs/reference/crates-features/index.md" "docs.rs"
+require_text "${public_dir}/docs/reference/configuration/index.md" "normalize_and_validate"
+require_text "${public_dir}/docs/contributing/workspace-architecture/index.html" "data-td-diagram-source"
+require_text "${public_dir}/docs/contributing/release/index.md" "MIGRATION-0.2.md"
+require_text "${public_dir}/docs/contributing/workspace-architecture/index.html" "/edit/main/website/content/"
+require_text "${public_dir}/docs/contributing/workspace-architecture/index.html" "third_party/mermaid/"
+
 printf 'verify-site: baseline contract passed\n'
