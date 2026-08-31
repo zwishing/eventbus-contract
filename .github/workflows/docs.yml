@@ -14,11 +14,6 @@ on:
       - 'README.md'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 concurrency:
   group: github-pages
   cancel-in-progress: false
@@ -32,12 +27,15 @@ env:
 jobs:
   build:
     name: Build documentation
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -47,7 +45,7 @@ jobs:
 
       - name: Configure GitHub Pages
         id: pages
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/configure-pages@v6
 
       - name: Install Hugo Extended
@@ -77,14 +75,17 @@ jobs:
         run: bash scripts/verify-site.sh
 
       - name: Upload Pages artifact
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v5
         with:
           path: website/public
 
   deploy:
     name: Deploy documentation
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

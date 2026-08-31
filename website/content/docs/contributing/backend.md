@@ -6,7 +6,7 @@ weight: 20
 新的传输实现必须符合 `StreamBackend` contract，而不只是提供“能发布”的适配器。先在独立 crate 中实现
 存储操作，再将其交给 `StreamBus<B>` 管理不依赖传输的消费流程。
 
-## Conformance checklist
+## 契约符合性清单
 
 - 实现 group 创建、append、读取新消息、读取/认领 idle pending 消息，以及单条和批量 ACK。
 - 保持 consumer-group 语义：同一 group 的竞争消费者不应各自处理同一待投递条目。

@@ -43,6 +43,10 @@ let bus = eventbus_contract::redis::stream_bus_from_connection(
 
 后端在 Redis Streams 上使用以下命令：
 
+Redis 为每个消费者组维护 Pending Entries List（PEL）：消息交给消费者后、收到 ACK 前都会记录为
+pending。重新认领是把空闲超过阈值的 pending 消息转交给另一个消费者继续处理，避免消费者退出后
+消息永久滞留。
+
 - `XADD` 写入事件。
 - `XREADGROUP` 从消费者组读取新事件。
 - `XACK` 确认已处理事件，使其离开 pending entries list。

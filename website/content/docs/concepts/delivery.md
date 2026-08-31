@@ -6,13 +6,17 @@ weight: 30
 订阅的 `AckMode` 决定消息在 handler 前、后或由 handler 本身何时完成。选择时先问：业务失败后，
 这条消息是否必须仍有机会重试？
 
-| Mode | Finalization | Use |
+| 模式 | 完成时机 | 适用场景 |
 |---|---|---|
 | `Manual` | Handler calls `ack`, `nack`, or `retry`. | Business code controls success. |
 | `AutoOnReceive` | Before handler execution. | Handler-failure loss is acceptable. |
 | `AutoOnHandlerSuccess` | After handler returns `Ok`. | Common at-least-once handling. |
 
 ## 手动完成
+
+待确认（pending）指后端已经投递、但尚未收到 ACK 的消息；重新认领（reclaim）是把超过空闲阈值的
+待确认消息转交给消费者再次处理。死信主题（`dead_letter_topic`）是无法继续处理的消息的隔离目的地；重试预算则是
+`max_retry` 允许的额外尝试次数。
 
 `DeliveryControl` 的 `ack`、`nack` 和 `retry` 都接收 `self: Box<Self>`。调用一个控制方法就消费这个
 handle，编译器阻止同一投递随后再走另一个完成分支。

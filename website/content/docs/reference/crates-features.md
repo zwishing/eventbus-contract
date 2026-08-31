@@ -1,5 +1,5 @@
 ---
-title: Crate 与 Feature
+title: 包与功能特性
 weight: 10
 ---
 
@@ -11,7 +11,7 @@ weight: 10
 - [eventbus-memory 0.2.1](https://docs.rs/eventbus-memory/0.2.1/eventbus_memory/)
 - [eventbus-redis 0.2.1](https://docs.rs/eventbus-redis/0.2.1/eventbus_redis/)
 
-| Crate | 作用 | 0.2.x 发布状态 |
+| 包 | 作用 | 0.2.x 发布状态 |
 |---|---|:---:|
 | `eventbus-core` | 对象安全契约、值对象和泛型 `StreamBus`。 | 是 |
 | `eventbus-memory` | 供测试和开发使用的进程内 `StreamBackend`。 | 是 |
@@ -20,9 +20,9 @@ weight: 10
 | `eventbus-integration` | DDD 集成事件辅助类型。 | 否，计划 0.3.0 |
 | `eventbus-contract` | 面向应用的 facade，按 feature re-export 已发布 crate。 | 是 |
 
-## Facade features
+## 门面包功能特性
 
-| Feature | 默认 | 含义 |
+| 功能特性 | 默认启用 | 含义 |
 |---|:---:|---|
 | `memory` | 是 | 进程内后端，适合测试与本地开发。 |
 | `redis` | 否 | Redis Streams 后端。 |

@@ -5,7 +5,7 @@ weight: 20
 
 API 参考见 [docs.rs 上的 eventbus-contract](https://docs.rs/eventbus-contract)。
 
-| Feature | Default | Purpose |
+| 功能特性 | 默认启用 | 用途 |
 |---|:---:|---|
 | `memory` | yes | In-process backend for tests and development. |
 | `redis` | no | Redis Streams backend. |

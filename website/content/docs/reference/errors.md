@@ -5,7 +5,7 @@ weight: 30
 
 `EventBusError` 是 `#[non_exhaustive]` 枚举；应用匹配时应保留 `_` 分支，以便将来的兼容新增。
 
-| Variant | 用途 |
+| 枚举变体 | 用途 |
 |---|---|
 | `Internal` | 库内部不变量、任务或通道等无法归入更具体类别的问题。 |
 | `Validation` | 配置、消息或 option 不满足 contract。 |
