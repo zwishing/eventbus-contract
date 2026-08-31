@@ -192,7 +192,7 @@ require_text "${repo_root}/.github/workflows/docs.yml" "actions/deploy-pages@v5"
 if grep -Eq '^permissions:$' "${repo_root}/.github/workflows/docs.yml"; then
   fail "workflow-level permissions are forbidden"
 fi
-require_job_permissions "${repo_root}/.github/workflows/docs.yml" build "contents=read"
+require_job_permissions "${repo_root}/.github/workflows/docs.yml" build "contents=read" "pages=read"
 require_job_permissions "${repo_root}/.github/workflows/docs.yml" deploy "pages=write" "id-token=write"
 deploy_gate="github.ref == 'refs/heads/main' && github.event_name != 'pull_request'"
 require_job_if "${repo_root}/.github/workflows/docs.yml" deploy "${deploy_gate}"

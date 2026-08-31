@@ -29,6 +29,7 @@ jobs:
     name: Build documentation
     permissions:
       contents: read
+      pages: read
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
