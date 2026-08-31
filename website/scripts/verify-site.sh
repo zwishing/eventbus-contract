@@ -92,4 +92,10 @@ require_text "${public_dir}/docs/contributing/release/index.md" "https://github.
 require_text "${public_dir}/docs/contributing/workspace-architecture/index.html" "/edit/main/website/content/"
 require_text "${public_dir}/docs/contributing/workspace-architecture/index.html" "third_party/mermaid/"
 
+repo_root="$(cd "${site_dir}/.." && pwd)"
+require_file "${repo_root}/.github/workflows/docs.yml"
+require_text "${repo_root}/.github/workflows/docs.yml" "HUGO_VERSION: 0.165.0"
+require_text "${repo_root}/.github/workflows/docs.yml" "actions/deploy-pages@v5"
+require_text "${repo_root}/README.md" "https://mapseekai.github.io/eventbus-contract/"
+
 printf 'verify-site: baseline contract passed\n'
