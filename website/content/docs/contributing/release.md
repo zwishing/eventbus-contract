@@ -9,7 +9,7 @@ weight: 40
 
 ## 发布清单
 
-1. 更新并审核 `CHANGELOG.md`，破坏性变更同时更新 `MIGRATION-0.2.md`。
+1. 更新并审核 [`CHANGELOG.md`](https://github.com/mapseekai/eventbus-contract/blob/main/CHANGELOG.md)，破坏性变更同时更新 [`MIGRATION-0.2.md`](https://github.com/mapseekai/eventbus-contract/blob/main/MIGRATION-0.2.md)。
 2. 在 tag 对应提交上运行 workspace 测试和 Redis Watermill feature 测试。
 3. 确认 crates.io token 可用；工作流先 dry-run 再真正发布。
 4. 按内部 path dependency 顺序发布：`eventbus-core` → `eventbus-memory` → `eventbus-redis` → `eventbus-contract`。

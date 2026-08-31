@@ -87,6 +87,8 @@ require_text "${public_dir}/docs/reference/crates-features/index.md" "docs.rs"
 require_text "${public_dir}/docs/reference/configuration/index.md" "normalize_and_validate"
 require_text "${public_dir}/docs/contributing/workspace-architecture/index.html" "data-td-diagram-source"
 require_text "${public_dir}/docs/contributing/release/index.md" "MIGRATION-0.2.md"
+require_text "${public_dir}/docs/contributing/release/index.md" "https://github.com/mapseekai/eventbus-contract/blob/main/CHANGELOG.md"
+require_text "${public_dir}/docs/contributing/release/index.md" "https://github.com/mapseekai/eventbus-contract/blob/main/MIGRATION-0.2.md"
 require_text "${public_dir}/docs/contributing/workspace-architecture/index.html" "/edit/main/website/content/"
 require_text "${public_dir}/docs/contributing/workspace-architecture/index.html" "third_party/mermaid/"
 
