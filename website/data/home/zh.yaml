@@ -1,0 +1,37 @@
+sections: [hero, cards, cta]
+
+hero:
+  align: center
+  eyebrow: Rust 事件驱动基础设施
+  title_lines:
+    - words: [{ text: 一套契约， }]
+    - words: [{ text: 多种消息后端。 }]
+  lead: eventbus-contract 为发布、订阅、投递确认、重试和死信定义对象安全的 Rust API。
+  actions:
+    - { label: 阅读文档, url: docs/, icon: fa-solid fa-book, style: primary }
+    - { label: 查看源码, url: https://github.com/mapseekai/eventbus-contract, icon: fa-brands fa-github, style: ghost }
+
+cards:
+  eyebrow: 稳定、可测试、可替换
+  title: 从清晰边界开始
+  columns: 3
+  items:
+    - title: 对象安全契约
+      desc: Publisher、Subscriber、Handler 与 DeliveryHandle 可作为依赖注入边界。
+      icon: fa-solid fa-code
+      url: docs/
+    - title: 可替换后端
+      desc: 开发测试使用内存后端，生产环境接入 Redis Streams。
+      icon: fa-solid fa-shuffle
+      url: docs/
+    - title: 明确投递语义
+      desc: 组合 ACK、重试、DLQ、顺序、背压与幂等策略。
+      icon: fa-solid fa-shield-halved
+      url: docs/
+
+cta:
+  title: 先用内存后端跑通第一条消息。
+  text: 默认 feature 无需外部服务，适合验证发布、订阅和确认流程。
+  label: 进入文档
+  url: docs/
+  style: primary
