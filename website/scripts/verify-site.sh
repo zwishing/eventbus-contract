@@ -71,6 +71,7 @@ require_file "${public_dir}/docs/concepts/guarantees-idempotency/index.html"
 require_file "${public_dir}/docs/concepts/ordering-backpressure/index.html"
 require_text "${public_dir}/docs/concepts/contracts/index.html" "data-td-diagram-source"
 require_text "${public_dir}/docs/concepts/delivery/index.md" "AutoOnHandlerSuccess"
+require_text "${public_dir}/docs/concepts/delivery/index.md" "没有配置 dead_letter_topic 时，nack 会确认并丢弃原消息。"
 require_text "${public_dir}/docs/concepts/guarantees-idempotency/index.md" "PublishConfirmation::Persisted"
 require_text "${public_dir}/docs/concepts/ordering-backpressure/index.md" "max_pending_acks >= max_in_flight > 0"
 

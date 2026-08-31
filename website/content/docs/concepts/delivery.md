@@ -18,8 +18,11 @@ weight: 30
 handle，编译器阻止同一投递随后再走另一个完成分支。
 
 - `ack` 确认当前投递。
-- `nack` 不进入重试循环；配置了 `dead_letter_topic` 时会立即发布到死信主题并确认原消息。
-- `retry` 在未耗尽预算时将消息重新发布，并写入重试 header；达到 `max_retry` 后会发布到死信主题。
+- `nack` 不进入重试循环；配置了 `dead_letter_topic` 时，先发布到死信主题，发布成功后才确认原消息。没有配置 dead_letter_topic 时，nack 会确认并丢弃原消息。
+- `retry` 在未耗尽预算时将消息重新发布，并写入重试 header；达到 `max_retry` 后改为发布到死信主题。两种路径都只会在发布成功后确认原消息。
+
+如果死信发布或重试发布失败，控制方法会在确认原消息之前返回错误；原消息仍处于 pending，之后可以被
+reclaim 并再次投递。
 
 `max_retry` 表示**初次投递之外**允许的重试次数：`max_retry = 0` 时，第一次失败就已耗尽预算。若
 重试耗尽而没有 `dead_letter_topic`，当前 `StreamBus` 会返回配置验证错误，而不是伪装成已经死信。
