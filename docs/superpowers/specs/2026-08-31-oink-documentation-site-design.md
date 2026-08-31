@@ -60,6 +60,7 @@ eventbus-contract/
 │   └── docs.yml
 ├── website/
 │   ├── README.md
+│   ├── .gitignore
 │   ├── go.mod
 │   ├── go.sum
 │   ├── hugo.yaml
@@ -147,7 +148,7 @@ OINK reads Markdown and project data from `website/`, combines them with the pin
 - Section output includes HTML, RSS, print, and Markdown.
 - `enableGitInfo` remains enabled.
 
-The root `.gitignore` will ignore only generated site state under `website/`: `public/`, `resources/`, `.hugo_build.lock`, and the local Hugo cache. Documentation source remains tracked.
+`website/.gitignore` will ignore generated site state relative to the site root: `public/`, `resources/`, `.hugo_build.lock`, and the local Hugo cache. Documentation source remains tracked. Keeping these rules inside `website/` avoids mixing the documentation-site change with unrelated root ignore rules.
 
 ## Local Development
 
@@ -232,7 +233,7 @@ Any incorrect, ambiguous, or context-dependent answer results in a targeted docu
 
 - Add the `website/` source tree and pinned Hugo Module files.
 - Add `.github/workflows/docs.yml`.
-- Update `.gitignore` with site build outputs.
+- Add `website/.gitignore` for site build outputs.
 - Update root `README.md` with the published documentation entry point.
 - Add implementation planning artifacts under `docs/superpowers/`.
 
@@ -250,4 +251,3 @@ The integration is complete when:
 6. root and website README files document discovery and local operation;
 7. independent reader testing finds no material ambiguity in the required onboarding and delivery-semantics questions;
 8. the Rust workspace and existing CI behavior remain unchanged.
-
