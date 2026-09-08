@@ -1,5 +1,29 @@
 # Migrating from `eventbus-contract` 0.1 to `eventbus-contract` 0.2
 
+## Runtime and async-contract fixes (unreleased)
+
+- Existing Redis connection constructors remain source compatible and now poll
+  without blocking their shared socket. Prefer
+  `stream_bus_from_client(client, options).await` or
+  `RedisBackend::from_client(client).await` for dedicated blocking readers.
+- Subscription-specific Redis codecs are released on close, abort or consumer-task
+  exit along with reader connections and reclaim cursors. Re-register the codec when restarting a
+  consumer with the same name. Stream/group overrides are unaffected.
+- `retry_backoff` now delays retry publication. The original entry remains pending
+  and retains its in-flight permit until the retry is published and ACKed. Graceful
+  `close()` waits for this delay just as it waits for an in-flight handler.
+- Subscriptions with retries reject `retry_backoff >= claim_idle_timeout`. This is
+  a minimum check: configure every competing consumer's idle timeout to exceed the
+  entire handler + backoff + retry publication/ACK duration. Slow work can otherwise
+  be reclaimed while still executing; the bus does not renew pending-entry leases.
+- Reclaim scans only take messages for reserved handler slots. Read timeouts are
+  capped by the next scan deadline; scans pause while the subscription is full.
+- Outbox, dispatcher, idempotency and integration traits now promise `Send`
+  futures, matching `StreamBackend`. Existing `async fn` implementations work if
+  their futures are `Send`. Implementations retaining `Rc` or non-Send guards
+  across an await must release them first or use Send state. Generic workers can
+  now await these traits from `tokio::spawn` and from Core's `BoxFuture` handlers.
+
 ## Workspace split
 
 The `eventbus-contract` crate is now a thin facade re-exporting from a

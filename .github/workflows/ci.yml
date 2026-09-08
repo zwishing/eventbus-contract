@@ -11,6 +11,16 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7.2
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -21,7 +31,11 @@ jobs:
         run: cargo fmt --all --check
       - name: Test (default features)
         run: cargo test --workspace
-      - name: Test (watermill feature)
-        run: cargo test -p eventbus-redis --features watermill
-      - name: Clippy (watermill feature)
-        run: cargo clippy -p eventbus-redis --features watermill --all-targets
+      - name: Test (all features)
+        run: cargo test --workspace --all-features
+      - name: Redis connection regressions
+        env:
+          EVENTBUS_REDIS_URL: redis://127.0.0.1:6379/
+        run: cargo test -p eventbus-redis --all-features --test connections -- --ignored
+      - name: Clippy (workspace, all features and targets)
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings

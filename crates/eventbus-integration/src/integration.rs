@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use eventbus_core::{EventBusError, Message};
 
 pub trait IntegrationEvent: Send + Sync {
@@ -7,21 +9,30 @@ pub trait IntegrationEvent: Send + Sync {
 }
 
 pub trait MessageFactory: Send + Sync {
-    async fn new_message<E>(&self, event: &E) -> Result<Message, EventBusError>
+    fn new_message<E>(
+        &self,
+        event: &E,
+    ) -> impl Future<Output = Result<Message, EventBusError>> + Send
     where
         E: IntegrationEvent + Sync;
 
-    async fn new_messages<E>(&self, events: &[E]) -> Result<Vec<Message>, EventBusError>
+    fn new_messages<E>(
+        &self,
+        events: &[E],
+    ) -> impl Future<Output = Result<Vec<Message>, EventBusError>> + Send
     where
         E: IntegrationEvent + Sync;
 }
 
 pub trait EventPublisher: Send + Sync {
-    async fn publish_event<E>(&self, event: &E) -> Result<(), EventBusError>
+    fn publish_event<E>(&self, event: &E) -> impl Future<Output = Result<(), EventBusError>> + Send
     where
         E: IntegrationEvent + Sync;
 
-    async fn publish_events<E>(&self, events: &[E]) -> Result<(), EventBusError>
+    fn publish_events<E>(
+        &self,
+        events: &[E],
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send
     where
         E: IntegrationEvent + Sync;
 }

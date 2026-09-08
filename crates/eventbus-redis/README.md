@@ -14,12 +14,11 @@ eventbus-contract = { version = "0.2", features = ["redis"] }
 
 ```rust
 use eventbus_contract::core::stream::StreamBusOptions;
-use eventbus_contract::redis::stream_bus_from_connection;
+use eventbus_contract::redis::stream_bus_from_client;
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let client = redis::Client::open("redis://127.0.0.1/")?;
-let conn = client.get_multiplexed_async_connection().await?;
-let bus = stream_bus_from_connection(conn, StreamBusOptions::default())?;
+let bus = stream_bus_from_client(client, StreamBusOptions::default()).await?;
 # Ok(()) }
 ```
 
@@ -72,7 +71,41 @@ Auto-detect is read-only. It tries matching codecs in order and can continue to 
 
 ## Connection / TLS / auth
 
-`RedisBackend::new` takes an already-connected `MultiplexedConnection`; the caller chooses the URL and any TLS / auth settings. The crate does not require, default to, or downgrade TLS.
+`RedisBackend::from_client(client).await` and `stream_bus_from_client(client, options).await`
+create a command connection and lazily open a dedicated blocking-read connection for each
+`(stream, group, consumer)`. Idle readers cannot hold up publishing, ACKs, or other consumers.
+The client selects the URL, database, TLS and authentication settings.
+
+`RedisBackend::new(connection)`, `with_codec(connection, codec)` and
+`stream_bus_from_connection` remain available. Since a cloned `MultiplexedConnection`
+shares its socket, these constructors use nonblocking reads with a 10 ms polling interval.
+For a custom command connection or codec, use `.with_read_client(client)` to enable
+dedicated readers; the client must address the same Redis server and database.
+
+Subscription close, abort and task exit release its read connection, reclaim cursor and
+subscription-specific codec registration. Stream/group codec registrations persist.
+`remove_subscription_read_codec(stream, group, consumer)` explicitly removes an override
+and restores normal codec fallback. Re-register subscription overrides before reusing a
+consumer name after closing it.
+
+`close()` and `abort()` wait for backend cleanup. Finish them before shutting down
+the Tokio runtime; asynchronous cleanup cannot run after the runtime has stopped.
+
+The crate does not require, default to, or downgrade TLS.
+
+## Performance checks
+
+Use a disposable Redis instance for the opt-in integration checks and round-trip benchmark:
+
+```sh
+EVENTBUS_REDIS_URL=redis://127.0.0.1:6379/ cargo test -p eventbus-redis --test connections -- --ignored
+EVENTBUS_REDIS_URL=redis://127.0.0.1:6379/ cargo bench -p eventbus-redis --bench roundtrip
+```
+
+The benchmark measures publish-to-completed-ACK latency using the default subscription
+and ACK settings. It deletes each acknowledged entry outside the timed interval, so stream
+history does not grow with the number of iterations. It measures latency, not maximum
+concurrent throughput.
 
 ## License
 

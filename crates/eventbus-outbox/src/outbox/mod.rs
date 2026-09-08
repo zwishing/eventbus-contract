@@ -1,3 +1,5 @@
+use std::future::Future;
+
 pub mod dead_letter;
 
 use chrono::{DateTime, Utc};
@@ -161,42 +163,58 @@ pub struct DeadLetterMessageRecord {
 // ---------------------------------------------------------------------------
 
 pub trait OutboxStore: Send + Sync {
-    async fn append(&self, req: AppendRequest) -> Result<(), EventBusError>;
+    fn append(&self, req: AppendRequest) -> impl Future<Output = Result<(), EventBusError>> + Send;
 
-    async fn append_batch(&self, reqs: Vec<AppendRequest>) -> Result<(), EventBusError>;
+    fn append_batch(
+        &self,
+        reqs: Vec<AppendRequest>,
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 
-    async fn lock_pending(
+    fn lock_pending(
         &self,
         worker: &str,
         limit: usize,
         now: DateTime<Utc>,
-    ) -> Result<Vec<OutboxMessageRecord>, EventBusError>;
+    ) -> impl Future<Output = Result<Vec<OutboxMessageRecord>, EventBusError>> + Send;
 
-    async fn mark_sent(&self, uids: &[String], sent_at: DateTime<Utc>)
-        -> Result<(), EventBusError>;
+    fn mark_sent(
+        &self,
+        uids: &[String],
+        sent_at: DateTime<Utc>,
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 
-    async fn mark_failed(
+    fn mark_failed(
         &self,
         uid: &str,
         next_retry_at: Option<DateTime<Utc>>,
         last_error: &str,
-    ) -> Result<(), EventBusError>;
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 
-    async fn mark_dead(&self, uid: &str, last_error: &str) -> Result<(), EventBusError>;
+    fn mark_dead(
+        &self,
+        uid: &str,
+        last_error: &str,
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 
-    async fn release_stale_locks(
+    fn release_stale_locks(
         &self,
         timeout: Duration,
         now: DateTime<Utc>,
-    ) -> Result<(), EventBusError>;
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 }
 
 pub trait StateTransitionStore: Send + Sync {
-    async fn transition(&self, input: TransitionInput) -> Result<(), EventBusError>;
+    fn transition(
+        &self,
+        input: TransitionInput,
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 }
 
 pub trait DeadLetterStore: Send + Sync {
-    async fn append_dead_letter(&self, msg: DeadLetterMessageRecord) -> Result<(), EventBusError>;
+    fn append_dead_letter(
+        &self,
+        msg: DeadLetterMessageRecord,
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 }
 
 // ---------------------------------------------------------------------------

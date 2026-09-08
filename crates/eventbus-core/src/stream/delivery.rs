@@ -30,8 +30,8 @@ pub(super) struct StreamDelivery<B: StreamBackend> {
     backend: SharedBackend<B>,
     ack_tx: mpsc::Sender<AckRequest>,
     message_id: String,
-    message: Arc<Message>,
-    state: DeliveryState,
+    pub(super) message: Arc<Message>,
+    pub(super) state: DeliveryState,
     config: Arc<SubscriptionConfig>,
     _permit: OwnedSemaphorePermit,
 }
@@ -144,6 +144,9 @@ impl<B: StreamBackend> DeliveryControl for StreamDelivery<B> {
                 }
                 self.publish_dead_letter(&reason_str).await?;
             } else {
+                // Keep the original pending and retain capacity until the
+                // delayed retry has been published and the original is ACKed.
+                tokio::time::sleep(self.config.retry_backoff()).await;
                 let mut retried = Message::clone(&self.message);
                 retried.headers.insert(
                     HEADER_RETRY_ATTEMPT.to_string(),

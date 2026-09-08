@@ -1,4 +1,3 @@
-#![allow(async_fn_in_trait)]
 //! Transactional outbox + dispatcher + dead-letter store traits.
 //!
 //! This crate provides the trait surface for implementing the outbox

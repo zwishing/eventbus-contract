@@ -9,7 +9,7 @@ The project guide is published at
 [mapseekai.github.io/eventbus-contract](https://mapseekai.github.io/eventbus-contract/).
 Use it for installation, backend guides, delivery semantics, configuration
 constraints, and contributor documentation. Exact API signatures remain on
-[docs.rs](https://docs.rs/eventbus-contract/0.2.1/eventbus_contract/).
+[docs.rs](https://docs.rs/eventbus-contract/0.2.2/eventbus_contract/).
 
 ```toml
 [dependencies]
@@ -21,7 +21,7 @@ Go Watermill streams:
 
 ```toml
 [dependencies]
-eventbus-contract = { version = "0.2.1", features = ["redis-watermill"] }
+eventbus-contract = { version = "0.2.2", features = ["redis-watermill"] }
 ```
 
 ```rust

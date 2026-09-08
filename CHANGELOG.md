@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.2 - 2026-09-08
+
+Patch release focused on subscription lifecycle correctness and Redis
+connection isolation.
+
+### Stream subscriptions
+
+- Reworked idle-message reclaiming to respect in-flight capacity and avoid
+  reclaim/read races while preserving prompt reclaim under long read waits.
+- Reject retry backoffs that would outlast the reclaim idle timeout.
+- Ensure consumer resources are cleaned up on close, abort, and background
+  task exit, including subscriptions that never reach their first poll.
+
+### Redis
+
+- Added `RedisBackend::from_client` and `stream_bus_from_client`, which lazily
+  create dedicated blocking-read connections per consumer so idle readers do
+  not block publishing or acknowledgements.
+- Added cleanup for per-consumer reader connections and codec registrations.
+- Added opt-in Redis connection regressions and a publish-to-ack round-trip
+  benchmark.
+
+### Validation
+
+- Added regression coverage for retry timing, reclaim capacity, abandoned
+  deliveries, and `Send` guarantees on public async trait methods.
+- CI now checks all features, ignored Redis connection regressions, and
+  workspace-wide Clippy targets.
+
 ## 0.2.1 - 2026-06-12
 
 Patch release focused on Redis Stream interoperability and publish readiness.

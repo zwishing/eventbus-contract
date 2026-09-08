@@ -5,6 +5,7 @@ use rand::Rng;
 use tokio::{
     sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore},
     task::{JoinHandle, JoinSet},
+    time::Instant,
 };
 
 use crate::{
@@ -17,7 +18,7 @@ use super::{
     backend::{ClaimedMessage, FetchedEntry, SharedBackend, StreamBackend},
     delivery::StreamDelivery,
     observer::{ErrorObserver, ErrorScope},
-    subscription::StreamSubscription,
+    subscription::{ConsumerCleanup, StreamSubscription},
 };
 
 use crate::HEADER_DEAD_LETTER_REASON;
@@ -71,9 +72,9 @@ pub struct StreamBusOptions {
     /// flush. Smaller values reduce ack latency; larger values amortize more
     /// round-trips.
     pub ack_flush_interval: Duration,
-    /// How often the independent reclaim task checks for idle messages.
-    /// Decoupled from `block_timeout` so reclaim latency is predictable
-    /// regardless of read polling cadence.
+    /// How often to check for idle messages when handler capacity is available.
+    /// Read waits are capped at the next scan so a long `block_timeout` does not
+    /// postpone reclaim. No entries are claimed while the subscription is full.
     pub reclaim_interval: Duration,
     /// Hard cap on a single message's payload, in bytes. Messages that exceed
     /// this on publish are rejected with `Validation`; messages that exceed
@@ -204,36 +205,37 @@ impl StreamBusOptions {
     }
 
     fn normalize(mut self) -> Result<Self, EventBusError> {
+        let defaults = Self::default();
         if self.block_timeout.is_zero() {
-            self.block_timeout = Duration::from_secs(2);
+            self.block_timeout = defaults.block_timeout;
         }
 
         if self.claim_idle_timeout.is_zero() {
-            self.claim_idle_timeout = Duration::from_secs(60);
+            self.claim_idle_timeout = defaults.claim_idle_timeout;
         }
 
         if self.claim_scan_batch_size == 0 {
-            self.claim_scan_batch_size = 64;
+            self.claim_scan_batch_size = defaults.claim_scan_batch_size;
         }
 
         if self.group_start_id.trim().is_empty() {
-            self.group_start_id = "$".to_string();
+            self.group_start_id = defaults.group_start_id;
         }
 
         if self.publish_batch_parallelism == 0 {
-            self.publish_batch_parallelism = DEFAULT_PUBLISH_BATCH_PARALLELISM;
+            self.publish_batch_parallelism = defaults.publish_batch_parallelism;
         }
 
         if self.ack_batch_size == 0 {
-            self.ack_batch_size = 64;
+            self.ack_batch_size = defaults.ack_batch_size;
         }
 
         if self.ack_flush_interval.is_zero() {
-            self.ack_flush_interval = Duration::from_millis(2);
+            self.ack_flush_interval = defaults.ack_flush_interval;
         }
 
         if self.reclaim_interval.is_zero() {
-            self.reclaim_interval = Duration::from_millis(500);
+            self.reclaim_interval = defaults.reclaim_interval;
         }
 
         Ok(self)
@@ -449,13 +451,13 @@ impl<B: StreamBackend> StreamBus<B> {
         self,
         mut close_rx: watch::Receiver<bool>,
         runtime: RuntimeState,
-        mut reclaim_rx: mpsc::Receiver<Vec<FetchedEntry>>,
         flusher_handle: JoinHandle<()>,
-        reclaim_handle: JoinHandle<()>,
     ) -> Result<(), EventBusError> {
         let mut tasks = JoinSet::new();
         let mut first_delivery_error: Option<EventBusError> = None;
         let mut backoff = BackoffState::new(runtime.config.retry_backoff);
+        let mut reclaim_backoff = BackoffState::new(Duration::from_millis(100));
+        let mut next_reclaim = Instant::now() + self.options.reclaim_interval;
         let observer = self.options.error_observer.clone();
 
         loop {
@@ -465,9 +467,8 @@ impl<B: StreamBackend> StreamBus<B> {
 
             drain_completed_tasks(&mut tasks, observer.as_ref(), &mut first_delivery_error)?;
 
-            // Acquire permits BEFORE fetching from the backend. This eliminates
-            // the TOCTOU race where reclaim could push entries between our
-            // `available_permits()` snapshot and the backend read.
+            // Reserve capacity before either read or reclaim, including the ACK
+            // round-trip. Reclaim must not take ownership of undispatchable work.
             let max_batch = runtime
                 .config
                 .backpressure
@@ -497,20 +498,53 @@ impl<B: StreamBackend> StreamBus<B> {
             }
 
             let read_limit = permits.len();
+            if Instant::now() >= next_reclaim {
+                let result = tokio::select! {
+                    _ = close_rx.changed() => break,
+                    result = self.backend.reclaim_idle(
+                        runtime.config.topic.as_str(),
+                        runtime.config.consumer_group.as_str(),
+                        runtime.config.consumer_name.as_str(),
+                        self.options.claim_idle_timeout,
+                        read_limit.min(self.options.claim_scan_batch_size),
+                    ) => result,
+                };
+                next_reclaim = Instant::now() + self.options.reclaim_interval;
+                match result {
+                    Ok(messages) => {
+                        reclaim_backoff.reset();
+                        if !messages.is_empty() {
+                            self.spawn_messages(&mut tasks, messages, &mut permits, &runtime)
+                                .await?;
+                            continue;
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(obs) = observer.as_ref() {
+                            obs.on_error(ErrorScope::Reclaim, &err);
+                        }
+                        next_reclaim += reclaim_backoff.next();
+                    }
+                }
+            }
+            let read_timeout = self.options.block_timeout.min(
+                next_reclaim
+                    .saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(1)),
+            );
             let read_future = self.backend.read_new(
                 runtime.config.topic.as_str(),
                 runtime.config.consumer_group.as_str(),
                 runtime.config.consumer_name.as_str(),
                 read_limit,
-                self.options.block_timeout,
+                read_timeout,
             );
             tokio::pin!(read_future);
 
             let mut any_work = false;
 
-            // Select between: close signal, reclaimed messages, new messages.
-            // Reclaim results arrive from the independent reclaim task and get
-            // spawned immediately — even while read_new is blocked.
+            // Only shutdown can cancel a read. Racing it against reclaim could
+            // discard a response after the backend already moved entries to PEL.
             tokio::select! {
                 biased;
                 changed = close_rx.changed() => {
@@ -519,12 +553,6 @@ impl<B: StreamBackend> StreamBus<B> {
                     }
                     // permits drop here, returning slots to the limiter
                     continue;
-                }
-                Some(reclaimed) = reclaim_rx.recv() => {
-                    if !reclaimed.is_empty() {
-                        any_work = true;
-                        self.spawn_messages(&mut tasks, reclaimed, &mut permits, &runtime).await?;
-                    }
                 }
                 result = &mut read_future => {
                     match result {
@@ -573,21 +601,9 @@ impl<B: StreamBackend> StreamBus<B> {
             }
         }
 
-        // Capture identifiers before releasing the runtime so the backend can
-        // evict any per-consumer cursor cache it kept (e.g., XAUTOCLAIM start).
-        let topic = runtime.config.topic.clone();
-        let group = runtime.config.consumer_group.clone();
-        let consumer = runtime.config.consumer_name.clone();
-
         // Drop all senders so the flusher drains its remaining buffer and exits.
         drop(runtime);
-        drop(reclaim_rx);
-        let _ = reclaim_handle.await;
         let _ = flusher_handle.await;
-
-        self.backend
-            .forget_consumer(topic.as_str(), group.as_str(), consumer.as_str())
-            .await;
 
         if let Some(err) = first_delivery_error {
             return Err(err);
@@ -603,17 +619,14 @@ impl<B: StreamBackend> StreamBus<B> {
         permits: &mut Vec<OwnedSemaphorePermit>,
         runtime: &RuntimeState,
     ) -> Result<(), EventBusError> {
-        // Permits are pre-acquired by the consume loop (one per anticipated
-        // delivery). The reclaim path may, however, deliver more entries than
-        // we have permits for; in that case we stop dispatching the surplus —
-        // those entries stay in the backend's pending list and the reclaim
-        // task will pick them up on the next cycle.
+        // Both backend paths were given a count bounded by these permits.
         for entry in entries {
             match entry {
                 FetchedEntry::Decoded(claimed) => {
                     let Some(permit) = permits.pop() else {
-                        // Out of permits — leave the rest in PEL for reclaim.
-                        break;
+                        return Err(EventBusError::Internal(
+                            "backend returned more messages than requested".into(),
+                        ));
                     };
                     let bus = self.clone();
                     let config = Arc::clone(&runtime.config);
@@ -767,8 +780,7 @@ impl<B: StreamBackend> StreamBus<B> {
                 Ok(())
             }
             AckMode::AutoOnHandlerSuccess => {
-                let real: Box<dyn DeliveryHandle> = delivery;
-                let (tracker, proxy) = AutoFinalizeTracker::new(real).await?;
+                let (tracker, proxy) = AutoFinalizeTracker::new(delivery);
                 let proxy_boxed: Box<dyn DeliveryHandle> = Box::new(proxy);
                 let result = handler.handle(proxy_boxed).await;
                 // If the handler did not finalize via the proxy, do it for them.
@@ -841,6 +853,12 @@ impl<B: StreamBackend> StreamBus<B> {
 
         cfg.normalize_and_validate()?;
 
+        if cfg.max_retry > 0 && cfg.retry_backoff >= self.options.claim_idle_timeout {
+            return Err(EventBusError::Validation(
+                "retry backoff must be shorter than claim idle timeout".into(),
+            ));
+        }
+
         if cfg.balance_mode == Some(crate::ConsumerBalanceMode::FanOut) {
             return Err(EventBusError::Validation(
                 "FanOut balance mode is not yet supported by StreamBus".into(),
@@ -880,24 +898,12 @@ impl<B: StreamBackend> StreamBus<B> {
 
         let limiter = Arc::new(Semaphore::new(limit));
 
-        // Independent reclaim task — sends batches back to the consume loop.
-        let (reclaim_tx, reclaim_rx) = mpsc::channel::<Vec<FetchedEntry>>(4);
-        let reclaim_handle = tokio::spawn({
-            let args = ReclaimLoopArgs {
-                backend: Arc::clone(&self.backend),
-                close_rx: close_rx.clone(),
-                reclaim_tx,
-                topic: cfg.topic.as_str().to_string(),
-                group: cfg.consumer_group.as_str().to_string(),
-                consumer: cfg.consumer_name.as_str().to_string(),
-                claim_idle_timeout: self.options.claim_idle_timeout,
-                claim_scan_batch_size: self.options.claim_scan_batch_size,
-                reclaim_interval: self.options.reclaim_interval,
-                error_observer: self.options.error_observer.clone(),
-            };
-            async move { reclaim_loop(args).await }
-        });
-
+        let (cleanup, cleaned) = ConsumerCleanup::new(
+            Arc::clone(&self.backend),
+            cfg.topic.as_str().to_owned(),
+            cfg.consumer_group.as_str().to_owned(),
+            cfg.consumer_name.as_str().to_owned(),
+        );
         let runtime = RuntimeState {
             handler,
             config: Arc::new(cfg),
@@ -909,14 +915,8 @@ impl<B: StreamBackend> StreamBus<B> {
             let bus = self.clone();
             let runtime = runtime.clone();
             async move {
-                bus.consume_loop(
-                    close_rx,
-                    runtime,
-                    reclaim_rx,
-                    flusher_handle,
-                    reclaim_handle,
-                )
-                .await
+                let _cleanup = cleanup;
+                bus.consume_loop(close_rx, runtime, flusher_handle).await
             }
         });
 
@@ -926,6 +926,7 @@ impl<B: StreamBackend> StreamBus<B> {
             consumer_name,
             close_tx,
             task,
+            cleaned,
             self.options.error_observer.clone(),
         ))
     }
@@ -941,72 +942,6 @@ impl<B: StreamBackend> Subscriber for StreamBus<B> {
             let sub = self.subscribe_inner(cfg, handler).await?;
             Ok(Arc::new(sub) as Arc<dyn crate::Subscription>)
         })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Reclaim loop (independent task)
-// ---------------------------------------------------------------------------
-
-struct ReclaimLoopArgs<B: StreamBackend> {
-    backend: SharedBackend<B>,
-    close_rx: watch::Receiver<bool>,
-    reclaim_tx: mpsc::Sender<Vec<FetchedEntry>>,
-    topic: String,
-    group: String,
-    consumer: String,
-    claim_idle_timeout: Duration,
-    claim_scan_batch_size: usize,
-    reclaim_interval: Duration,
-    error_observer: Option<Arc<dyn ErrorObserver>>,
-}
-
-async fn reclaim_loop<B: StreamBackend>(args: ReclaimLoopArgs<B>) {
-    let ReclaimLoopArgs {
-        backend,
-        mut close_rx,
-        reclaim_tx,
-        topic,
-        group,
-        consumer,
-        claim_idle_timeout,
-        claim_scan_batch_size,
-        reclaim_interval,
-        error_observer,
-    } = args;
-
-    let mut backoff = BackoffState::new(Duration::from_millis(100));
-
-    loop {
-        if !sleep_or_close(&mut close_rx, reclaim_interval).await {
-            break;
-        }
-
-        // Reclaim no longer peeks at the limiter — the consume loop gates
-        // permits before dispatching, and surplus entries left here remain
-        // in PEL for the next cycle. Reclaim's own pacing is `reclaim_interval`
-        // plus `claim_scan_batch_size`.
-        let count = claim_scan_batch_size;
-        match backend
-            .reclaim_idle(&topic, &group, &consumer, claim_idle_timeout, count)
-            .await
-        {
-            Ok(messages) => {
-                if !messages.is_empty() && reclaim_tx.send(messages).await.is_err() {
-                    break;
-                }
-                backoff.reset();
-            }
-            Err(err) => {
-                if let Some(obs) = error_observer.as_ref() {
-                    obs.on_error(ErrorScope::Reclaim, &err);
-                }
-                let dur = backoff.next();
-                if !sleep_or_close(&mut close_rx, dur).await {
-                    break;
-                }
-            }
-        }
     }
 }
 

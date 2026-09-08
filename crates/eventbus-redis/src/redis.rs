@@ -1,8 +1,8 @@
 //! Redis Stream backend using [`redis-rs`](https://github.com/redis-rs/redis-rs).
 //!
-//! Enable with the `redis-backend` cargo feature:
+//! Enable with the facade's `redis` cargo feature:
 //! ```toml
-//! eventbus-core = { path = "...", features = ["redis-backend"] }
+//! eventbus-contract = { version = "0.2", features = ["redis"] }
 //! ```
 //!
 //! Wire format is compatible with the Go `StreamBus` — messages are
@@ -18,8 +18,8 @@
 //!
 //! # Connection security
 //!
-//! [`RedisBackend`] takes an already-connected [`MultiplexedConnection`]; the
-//! caller is responsible for choosing the connection URL and any TLS / auth
+//! [`RedisBackend`] accepts a [`redis::Client`] or an already-connected
+//! [`MultiplexedConnection`]. The caller chooses the connection URL and TLS / auth
 //! settings:
 //!
 //! - Use a `rediss://` URL (note the double `s`) to negotiate TLS. The
@@ -42,6 +42,8 @@ use dashmap::DashMap;
 use redis::aio::MultiplexedConnection;
 use redis::streams::{StreamId, StreamRangeReply, StreamReadReply};
 use redis::{FromRedisValue, Value};
+use tokio::sync::OnceCell;
+use tokio::time::Instant;
 
 use crate::codec::{
     DecodeContext, EncodeContext, EnvelopeStreamCodec, JsonCodec, RedisStreamCodec,
@@ -59,6 +61,7 @@ use eventbus_core::{Codec, EventBusError, Message, PartialDeliveryState, HEADER_
 /// account for any envelope/encoding overhead (base64 + JSON framing in the
 /// default JSON codec).
 const MAX_RAW_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+const SHARED_READ_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// A [`StreamBackend`] backed by a real Redis connection.
 ///
@@ -74,17 +77,16 @@ const MAX_RAW_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 /// ```rust,no_run
 /// use std::sync::Arc;
 /// use eventbus_core::stream::{StreamBus, StreamBusOptions};
-/// use eventbus_redis::{stream_bus_from_connection, RedisBackend};
+/// use eventbus_redis::{stream_bus_from_client, RedisBackend};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = redis::Client::open("redis://127.0.0.1/")?;
-/// let conn = client.get_multiplexed_async_connection().await?;
 ///
-/// // Option A: via convenience constructor (uses JsonCodec).
-/// let bus = stream_bus_from_connection(conn.clone(), StreamBusOptions::default())?;
+/// // Option A: convenience constructor with dedicated blocking readers.
+/// let bus = stream_bus_from_client(client.clone(), StreamBusOptions::default()).await?;
 ///
 /// // Option B: explicit backend construction.
-/// let backend = Arc::new(RedisBackend::new(conn));
+/// let backend = Arc::new(RedisBackend::from_client(client).await?);
 /// let bus = StreamBus::new(backend, StreamBusOptions::default())?;
 /// # Ok(())
 /// # }
@@ -178,20 +180,23 @@ impl CodecRegistry {
 
 pub struct RedisBackend {
     conn: MultiplexedConnection,
+    read_client: Option<redis::Client>,
+    read_connections: DashMap<StreamGroupConsumerKey, Arc<OnceCell<MultiplexedConnection>>>,
     /// Field-level wire-format registry. Defaults to JSON in a `message` field.
     registry: CodecRegistry,
     /// Per-(stream, group, consumer) XAUTOCLAIM start-id cursor.
     ///
-    /// [`DashMap`] gives lock-free reads and shard-level write contention only
-    /// when two consumers share a shard — far cheaper than a single
-    /// `Mutex<HashMap>` under high consumer counts, and the synchronous API
-    /// means no `.await` can span a held reference (shared references are
-    /// released via `entry_ref` clone before any async work).
+    /// DashMap guards are scoped to synchronous lookups and updates; no shard
+    /// lock is held across network I/O.
     reclaim_starts: DashMap<ReclaimCursorKey, String>,
 }
 
 impl RedisBackend {
     /// Construct a backend using the default [`JsonCodec`] wire format.
+    ///
+    /// A connection clone shares its socket, so this constructor uses
+    /// nonblocking read polling. Prefer [`Self::from_client`] for dedicated
+    /// blocking-read connections and lower idle polling overhead.
     pub fn new(conn: MultiplexedConnection) -> Self {
         Self::with_codec(conn, Arc::new(JsonCodec))
     }
@@ -203,9 +208,58 @@ impl RedisBackend {
     pub fn with_codec(conn: MultiplexedConnection, codec: Arc<dyn Codec>) -> Self {
         Self {
             conn,
+            read_client: None,
+            read_connections: DashMap::new(),
             registry: CodecRegistry::new(Arc::new(EnvelopeStreamCodec::from_core_codec(codec))),
             reclaim_starts: DashMap::new(),
         }
+    }
+
+    /// Connect with a shared command connection and lazily create one dedicated
+    /// blocking-read connection per `(stream, group, consumer)`.
+    pub async fn from_client(client: redis::Client) -> Result<Self, EventBusError> {
+        let conn = client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|err| EventBusError::source("connect Redis backend", err))?;
+        Ok(Self::new(conn).with_read_client(client))
+    }
+
+    /// Enable dedicated readers on a backend built with a custom command
+    /// connection or codec. The client must select the same server and database.
+    #[must_use]
+    pub fn with_read_client(mut self, client: redis::Client) -> Self {
+        self.read_connections.clear();
+        self.read_client = Some(client);
+        self
+    }
+
+    async fn read_connection(
+        &self,
+        stream: &str,
+        group: &str,
+        consumer: &str,
+    ) -> Result<MultiplexedConnection, EventBusError> {
+        let Some(client) = &self.read_client else {
+            return Ok(self.conn.clone());
+        };
+        let key = (stream.to_owned(), group.to_owned(), consumer.to_owned());
+        let cell = Arc::clone(
+            self.read_connections
+                .entry(key)
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .value(),
+        );
+        // Release the DashMap guard before connecting. OnceCell also prevents
+        // simultaneous first reads from opening duplicate connections.
+        cell.get_or_try_init(|| async {
+            client
+                .get_multiplexed_async_connection()
+                .await
+                .map_err(|err| EventBusError::source("connect Redis reader", err))
+        })
+        .await
+        .cloned()
     }
 
     /// Register a read codec for every consumer reading from `stream`.
@@ -248,6 +302,20 @@ impl RedisBackend {
             .set_subscription_read_codec(stream, group, consumer, codec);
     }
 
+    /// Remove an override, releasing its codec and restoring group/stream/default
+    /// fallback on the next read. Also called by `forget_consumer` on shutdown.
+    pub fn remove_subscription_read_codec(
+        &self,
+        stream: &str,
+        group: &str,
+        consumer: &str,
+    ) -> bool {
+        self.registry
+            .subscription_read
+            .remove(&(stream.to_owned(), group.to_owned(), consumer.to_owned()))
+            .is_some()
+    }
+
     /// Register a write codec for `stream`.
     ///
     /// Writes use the stream-specific codec when present and otherwise fall
@@ -283,11 +351,21 @@ impl RedisBackend {
 ///
 /// Shorthand for wrapping the connection in a [`RedisBackend`] (with the
 /// default [`JsonCodec`]) and calling [`StreamBus::new`].
+/// Reads use nonblocking polling; prefer [`stream_bus_from_client`] for
+/// dedicated blocking connections and lower idle polling overhead.
 pub fn stream_bus_from_connection(
     conn: MultiplexedConnection,
     options: StreamBusOptions,
 ) -> Result<StreamBus<RedisBackend>, EventBusError> {
     StreamBus::new(Arc::new(RedisBackend::new(conn)), options)
+}
+
+/// Construct a bus with dedicated blocking readers for each consumer.
+pub async fn stream_bus_from_client(
+    client: redis::Client,
+    options: StreamBusOptions,
+) -> Result<StreamBus<RedisBackend>, EventBusError> {
+    StreamBus::new(Arc::new(RedisBackend::from_client(client).await?), options)
 }
 
 // ---------------------------------------------------------------------------
@@ -383,44 +461,59 @@ impl StreamBackend for RedisBackend {
         count: usize,
         timeout: Duration,
     ) -> Result<Vec<FetchedEntry>, EventBusError> {
-        let mut conn = self.conn.clone();
-
-        let result: Result<StreamReadReply, _> = redis::cmd("XREADGROUP")
-            .arg("GROUP")
-            .arg(group)
-            .arg(consumer)
-            .arg("COUNT")
-            .arg(count)
-            .arg("BLOCK")
-            .arg(timeout.as_millis() as u64)
-            .arg("STREAMS")
-            .arg(stream)
-            .arg(">")
-            .query_async(&mut conn)
-            .await;
-
-        let reply = match result {
-            Ok(r) => r,
-            // Redis returns nil when no new messages are available.
-            Err(err) if is_nil_response(&err) => return Ok(Vec::new()),
-            Err(err) => {
-                return Err(EventBusError::source(
-                    format!("xreadgroup on {stream}"),
-                    err,
-                ))
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let mut conn = self.read_connection(stream, group, consumer).await?;
+        let blocking = self.read_client.is_some() && !timeout.is_zero();
+        let deadline = Instant::now() + timeout;
+        loop {
+            let mut cmd = redis::cmd("XREADGROUP");
+            cmd.arg("GROUP")
+                .arg(group)
+                .arg(consumer)
+                .arg("COUNT")
+                .arg(count);
+            if blocking {
+                // Redis interprets BLOCK 0 as infinite, not as a zero timeout.
+                cmd.arg("BLOCK").arg(timeout.as_millis().max(1) as u64);
             }
-        };
-
-        // Per-entry decoding: a single corrupt payload becomes a `Malformed`
-        // entry rather than poisoning the whole batch (and looping forever
-        // because XREADGROUP already moved the entry into the PEL).
-        let codec = self.registry.read_codec(stream, group, consumer);
-        Ok(reply
-            .keys
-            .into_iter()
-            .flat_map(|k| k.ids)
-            .map(|entry| decode_entry(stream, entry, false, codec.as_ref()))
-            .collect())
+            let result: Result<StreamReadReply, _> = cmd
+                .arg("STREAMS")
+                .arg(stream)
+                .arg(">")
+                .query_async(&mut conn)
+                .await;
+            let reply = match result {
+                Ok(reply) => reply,
+                Err(err) if is_nil_response(&err) => StreamReadReply { keys: Vec::new() },
+                Err(err) => {
+                    self.read_connections.remove(&(
+                        stream.to_owned(),
+                        group.to_owned(),
+                        consumer.to_owned(),
+                    ));
+                    return Err(EventBusError::source(
+                        format!("xreadgroup on {stream}"),
+                        err,
+                    ));
+                }
+            };
+            let codec = self.registry.read_codec(stream, group, consumer);
+            let entries: Vec<_> = reply
+                .keys
+                .into_iter()
+                .flat_map(|key| key.ids)
+                .map(|entry| decode_entry(stream, entry, false, codec.as_ref()))
+                .collect();
+            if !entries.is_empty() || blocking || Instant::now() >= deadline {
+                return Ok(entries);
+            }
+            tokio::time::sleep(
+                SHARED_READ_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+            )
+            .await;
+        }
     }
 
     async fn ack(&self, stream: &str, group: &str, message_id: &str) -> Result<(), EventBusError> {
@@ -465,6 +558,8 @@ impl StreamBackend for RedisBackend {
     async fn forget_consumer(&self, stream: &str, group: &str, consumer: &str) {
         let key: ReclaimCursorKey = (stream.to_string(), group.to_string(), consumer.to_string());
         self.reclaim_starts.remove(&key);
+        self.read_connections.remove(&key);
+        self.remove_subscription_read_codec(stream, group, consumer);
     }
 }
 
@@ -541,12 +636,15 @@ fn parse_autoclaim(
             ))
         }
     };
-    let next_start: String = FromRedisValue::from_redis_value(items[0].clone())
-        .map_err(|err| EventBusError::source("decode XAUTOCLAIM cursor", err))?;
+    let mut items = items.into_iter();
+    let next_start: String =
+        FromRedisValue::from_redis_value(items.next().expect("validated response length"))
+            .map_err(|err| EventBusError::source("decode XAUTOCLAIM cursor", err))?;
 
-    // items[1] has the same format as XRANGE output → parse as StreamRangeReply.
-    let range: StreamRangeReply = FromRedisValue::from_redis_value(items[1].clone())
-        .map_err(|err| EventBusError::source("decode XAUTOCLAIM entries", err))?;
+    // Move the entries into the parser: cloning this Value copies every payload.
+    let range: StreamRangeReply =
+        FromRedisValue::from_redis_value(items.next().expect("validated response length"))
+            .map_err(|err| EventBusError::source("decode XAUTOCLAIM entries", err))?;
 
     // Per-entry decoding (no `?`) so a corrupt entry becomes `Malformed`
     // instead of poisoning the whole reclaim batch.

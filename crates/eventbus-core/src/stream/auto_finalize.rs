@@ -16,6 +16,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use super::{backend::StreamBackend, delivery::StreamDelivery};
 use crate::{
     BoxFuture, BoxedError, Delivery, DeliveryControl, DeliveryHandle, DeliveryInspector,
     DeliveryState, EventBusError, Message,
@@ -30,14 +31,14 @@ pub(super) struct AutoFinalizeTracker {
 }
 
 impl AutoFinalizeTracker {
-    pub(super) async fn new(
-        boxed: Box<dyn DeliveryHandle>,
-    ) -> Result<(Self, AutoFinalizeProxy), EventBusError> {
+    pub(super) fn new<B: StreamBackend>(
+        boxed: Box<StreamDelivery<B>>,
+    ) -> (Self, AutoFinalizeProxy) {
         // Snapshot message + state so the proxy's `message()` / `state()`
         // can serve reads without touching the inner box (which may have
         // been moved out for finalization).
-        let msg_snapshot = Arc::new(boxed.message().clone());
-        let state_snapshot = boxed.state().await?;
+        let msg_snapshot = Arc::clone(&boxed.message);
+        let state_snapshot = boxed.state.clone();
         let inner: SharedHandle = Arc::new(Mutex::new(Some(boxed)));
         let tracker = Self {
             inner: Arc::clone(&inner),
@@ -47,7 +48,7 @@ impl AutoFinalizeTracker {
             msg_snapshot,
             state_snapshot,
         };
-        Ok((tracker, proxy))
+        (tracker, proxy)
     }
 
     /// Pull out the inner box if the handler did not finalize. Returns

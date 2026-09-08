@@ -9,9 +9,6 @@ use crate::EventBusError;
 use super::backend::StreamBackend;
 use super::observer::{ErrorObserver, ErrorScope};
 
-const DEFAULT_ACK_BATCH_SIZE: usize = 64;
-const DEFAULT_ACK_FLUSH_INTERVAL: Duration = Duration::from_millis(2);
-
 pub(super) struct AckRequest {
     pub id: String,
     pub done: oneshot::Sender<Result<(), EventBusError>>,
@@ -37,16 +34,9 @@ pub(super) fn spawn<B: StreamBackend>(
     flush_interval: Duration,
     error_observer: Option<Arc<dyn ErrorObserver>>,
 ) -> (mpsc::Sender<AckRequest>, JoinHandle<()>) {
-    let batch_size = if batch_size == 0 {
-        DEFAULT_ACK_BATCH_SIZE
-    } else {
-        batch_size
-    };
-    let flush_interval = if flush_interval.is_zero() {
-        DEFAULT_ACK_FLUSH_INTERVAL
-    } else {
-        flush_interval
-    };
+    // StreamBusOptions normalizes these once at construction.
+    debug_assert!(batch_size > 0);
+    debug_assert!(!flush_interval.is_zero());
 
     let channel_cap = batch_size.saturating_mul(4).max(64);
     let (tx, mut rx) = mpsc::channel::<AckRequest>(channel_cap);

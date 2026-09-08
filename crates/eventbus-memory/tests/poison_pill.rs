@@ -14,7 +14,7 @@ use eventbus_core::stream::{
 };
 use eventbus_core::{
     BoxFuture, ConsumerGroup, DeliveryHandle, EventBusError, Handler, Headers, Message,
-    PublishOptions, SubscriptionConfig, Topic,
+    SubscriptionConfig, Topic,
 };
 use eventbus_memory::MemoryStreamBackend;
 use tokio::time::sleep;
@@ -187,12 +187,14 @@ async fn malformed_entry_is_acked_observed_and_dlq_routed() {
 
     // Observer must have seen exactly the synthetic Read-scope error (and
     // possibly more — what matters is at least one Read scope fired).
-    let errors = observer.errors.lock().unwrap();
-    assert!(
-        errors.iter().any(|(scope, _)| *scope == ErrorScope::Read),
-        "expected at least one Read scope error, got {:?}",
-        errors
-    );
+    {
+        let errors = observer.errors.lock().unwrap();
+        assert!(
+            errors.iter().any(|(scope, _)| *scope == ErrorScope::Read),
+            "expected at least one Read scope error, got {:?}",
+            errors
+        );
+    }
 
     // The DLQ must have received the synthetic envelope.
     let dlq_len = inner.stream_len("evt.poison.dlq").await;

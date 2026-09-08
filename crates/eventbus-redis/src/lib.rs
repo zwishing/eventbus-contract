@@ -31,4 +31,4 @@ pub use codec::{
     AutoDetectRedisStreamCodec, DecodeContext, EncodeContext, EnvelopeStreamCodec, JsonCodec,
     RedisStreamCodec,
 };
-pub use redis::{stream_bus_from_connection, RedisBackend};
+pub use redis::{stream_bus_from_client, stream_bus_from_connection, RedisBackend};

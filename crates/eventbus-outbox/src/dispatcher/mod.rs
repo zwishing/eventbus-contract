@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 
@@ -11,19 +13,23 @@ pub struct Notification {
 }
 
 pub trait Notifier: Send + Sync {
-    async fn notify(&self, channel: &str, payload: &str) -> Result<(), EventBusError>;
+    fn notify(
+        &self,
+        channel: &str,
+        payload: &str,
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 }
 
 pub trait Listener: Send + Sync {
-    async fn listen(&self, channel: &str) -> Result<(), EventBusError>;
-    async fn recv(&self) -> Result<Notification, EventBusError>;
-    async fn close(&self) -> Result<(), EventBusError>;
+    fn listen(&self, channel: &str) -> impl Future<Output = Result<(), EventBusError>> + Send;
+    fn recv(&self) -> impl Future<Output = Result<Notification, EventBusError>> + Send;
+    fn close(&self) -> impl Future<Output = Result<(), EventBusError>> + Send;
 }
 
 pub trait Dispatcher: Send + Sync {
-    async fn start(&self) -> Result<(), EventBusError>;
-    async fn stop(&self) -> Result<(), EventBusError>;
-    async fn dispatch_once(&self) -> Result<(), EventBusError>;
+    fn start(&self) -> impl Future<Output = Result<(), EventBusError>> + Send;
+    fn stop(&self) -> impl Future<Output = Result<(), EventBusError>> + Send;
+    fn dispatch_once(&self) -> impl Future<Output = Result<(), EventBusError>> + Send;
 }
 
 #[derive(Debug, Clone)]

@@ -113,9 +113,7 @@ impl StreamBackend for MemoryStreamBackend {
         let ids: Vec<String> = group_state
             .pending
             .iter()
-            .filter(|(_, pending)| {
-                pending.owner != consumer && pending.last_delivered_at.elapsed() >= min_idle
-            })
+            .filter(|(_, pending)| pending.last_delivered_at.elapsed() >= min_idle)
             .map(|(id, _)| id.clone())
             .take(count)
             .collect();

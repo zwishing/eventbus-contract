@@ -957,49 +957,43 @@ impl FailingAckBackend {
 }
 
 impl StreamBackend for FailingAckBackend {
-    fn create_group(
+    async fn create_group(
         &self,
         _stream: &str,
         _group: &str,
         _start_id: &str,
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send {
-        async { Ok(()) }
+    ) -> Result<(), EventBusError> {
+        Ok(())
     }
 
-    fn publish(
-        &self,
-        _stream: &str,
-        message: Message,
-    ) -> impl Future<Output = Result<String, EventBusError>> + Send {
-        async move {
-            let id = format!("{}-0", self.next_id.fetch_add(1, Ordering::SeqCst));
-            {
-                let mut queue = self.queue.lock().await;
-                queue.push_back(ClaimedMessage {
-                    id: id.clone(),
-                    message: Arc::new(message),
-                    state: PartialDeliveryState {
-                        attempt: 1,
-                        first_received: Utc::now(),
-                        last_received: Utc::now(),
-                        redelivered: false,
-                    },
-                });
-            }
-            self.notify.notify_waiters();
-            Ok(id)
+    async fn publish(&self, _stream: &str, message: Message) -> Result<String, EventBusError> {
+        let id = format!("{}-0", self.next_id.fetch_add(1, Ordering::SeqCst));
+        {
+            let mut queue = self.queue.lock().await;
+            queue.push_back(ClaimedMessage {
+                id: id.clone(),
+                message: Arc::new(message),
+                state: PartialDeliveryState {
+                    attempt: 1,
+                    first_received: Utc::now(),
+                    last_received: Utc::now(),
+                    redelivered: false,
+                },
+            });
         }
+        self.notify.notify_waiters();
+        Ok(id)
     }
 
-    fn reclaim_idle(
+    async fn reclaim_idle(
         &self,
         _stream: &str,
         _group: &str,
         _consumer: &str,
         _min_idle: Duration,
         _count: usize,
-    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
-        async { Ok(Vec::new()) }
+    ) -> Result<Vec<FetchedEntry>, EventBusError> {
+        Ok(Vec::new())
     }
 
     fn read_new(
@@ -1013,13 +1007,13 @@ impl StreamBackend for FailingAckBackend {
         self.read_new_impl(count, timeout)
     }
 
-    fn ack(
+    async fn ack(
         &self,
         _stream: &str,
         _group: &str,
         _message_id: &str,
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send {
-        async { Err(EventBusError::Connection("ack failed".into())) }
+    ) -> Result<(), EventBusError> {
+        Err(EventBusError::Connection("ack failed".into()))
     }
 }
 
@@ -1072,62 +1066,56 @@ struct ParallelPublishBackend {
 }
 
 impl StreamBackend for ParallelPublishBackend {
-    fn create_group(
+    async fn create_group(
         &self,
         _stream: &str,
         _group: &str,
         _start_id: &str,
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send {
-        async { Ok(()) }
+    ) -> Result<(), EventBusError> {
+        Ok(())
     }
 
-    fn publish(
-        &self,
-        _stream: &str,
-        _message: Message,
-    ) -> impl Future<Output = Result<String, EventBusError>> + Send {
-        async move {
-            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            let _ = self
-                .max_active
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                    Some(current.max(active))
-                });
-            sleep(Duration::from_millis(25)).await;
-            self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(format!("{}-0", self.next_id.fetch_add(1, Ordering::SeqCst)))
-        }
+    async fn publish(&self, _stream: &str, _message: Message) -> Result<String, EventBusError> {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = self
+            .max_active
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.max(active))
+            });
+        sleep(Duration::from_millis(25)).await;
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Ok(format!("{}-0", self.next_id.fetch_add(1, Ordering::SeqCst)))
     }
 
-    fn reclaim_idle(
+    async fn reclaim_idle(
         &self,
         _stream: &str,
         _group: &str,
         _consumer: &str,
         _min_idle: Duration,
         _count: usize,
-    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
-        async { Ok(Vec::new()) }
+    ) -> Result<Vec<FetchedEntry>, EventBusError> {
+        Ok(Vec::new())
     }
 
-    fn read_new(
+    async fn read_new(
         &self,
         _stream: &str,
         _group: &str,
         _consumer: &str,
         _count: usize,
         _timeout: Duration,
-    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
-        async { Ok(Vec::new()) }
+    ) -> Result<Vec<FetchedEntry>, EventBusError> {
+        Ok(Vec::new())
     }
 
-    fn ack(
+    async fn ack(
         &self,
         _stream: &str,
         _group: &str,
         _message_id: &str,
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send {
-        async { Ok(()) }
+    ) -> Result<(), EventBusError> {
+        Ok(())
     }
 }
 
@@ -1165,79 +1153,71 @@ struct BatchAckBackend {
 }
 
 impl StreamBackend for BatchAckBackend {
-    fn create_group(
+    async fn create_group(
         &self,
         _stream: &str,
         _group: &str,
         _start_id: &str,
-    ) -> impl Future<Output = Result<(), EventBusError>> + Send {
-        async { Ok(()) }
+    ) -> Result<(), EventBusError> {
+        Ok(())
     }
 
-    fn publish(
-        &self,
-        _stream: &str,
-        message: Message,
-    ) -> impl Future<Output = Result<String, EventBusError>> + Send {
-        async move {
-            let id = format!("{}-0", self.next_id.fetch_add(1, Ordering::SeqCst));
-            {
-                let mut queue = self.queue.lock().await;
-                queue.push_back(ClaimedMessage {
-                    id: id.clone(),
-                    message: Arc::new(message),
-                    state: PartialDeliveryState {
-                        attempt: 1,
-                        first_received: Utc::now(),
-                        last_received: Utc::now(),
-                        redelivered: false,
-                    },
-                });
-            }
-            self.notify.notify_waiters();
-            Ok(id)
+    async fn publish(&self, _stream: &str, message: Message) -> Result<String, EventBusError> {
+        let id = format!("{}-0", self.next_id.fetch_add(1, Ordering::SeqCst));
+        {
+            let mut queue = self.queue.lock().await;
+            queue.push_back(ClaimedMessage {
+                id: id.clone(),
+                message: Arc::new(message),
+                state: PartialDeliveryState {
+                    attempt: 1,
+                    first_received: Utc::now(),
+                    last_received: Utc::now(),
+                    redelivered: false,
+                },
+            });
         }
+        self.notify.notify_waiters();
+        Ok(id)
     }
 
-    fn reclaim_idle(
+    async fn reclaim_idle(
         &self,
         _stream: &str,
         _group: &str,
         _consumer: &str,
         _min_idle: Duration,
         _count: usize,
-    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
-        async { Ok(Vec::new()) }
+    ) -> Result<Vec<FetchedEntry>, EventBusError> {
+        Ok(Vec::new())
     }
 
-    fn read_new(
+    async fn read_new(
         &self,
         _stream: &str,
         _group: &str,
         _consumer: &str,
         count: usize,
         wait: Duration,
-    ) -> impl Future<Output = Result<Vec<FetchedEntry>, EventBusError>> + Send {
-        async move {
-            if count == 0 {
-                return Ok(Vec::new());
-            }
-            {
-                let mut queue = self.queue.lock().await;
-                if !queue.is_empty() {
-                    let take = count.min(queue.len());
-                    return Ok(queue.drain(..take).map(FetchedEntry::Decoded).collect());
-                }
-            }
-            if wait.is_zero() {
-                return Ok(Vec::new());
-            }
-            let notified = self.notify.notified();
-            let _ = tokio::time::timeout(wait, notified).await;
-            let mut queue = self.queue.lock().await;
-            let take = count.min(queue.len());
-            Ok(queue.drain(..take).map(FetchedEntry::Decoded).collect())
+    ) -> Result<Vec<FetchedEntry>, EventBusError> {
+        if count == 0 {
+            return Ok(Vec::new());
         }
+        {
+            let mut queue = self.queue.lock().await;
+            if !queue.is_empty() {
+                let take = count.min(queue.len());
+                return Ok(queue.drain(..take).map(FetchedEntry::Decoded).collect());
+            }
+        }
+        if wait.is_zero() {
+            return Ok(Vec::new());
+        }
+        let notified = self.notify.notified();
+        let _ = tokio::time::timeout(wait, notified).await;
+        let mut queue = self.queue.lock().await;
+        let take = count.min(queue.len());
+        Ok(queue.drain(..take).map(FetchedEntry::Decoded).collect())
     }
 
     fn ack(
@@ -1800,16 +1780,19 @@ async fn malformed_entry_is_acked_dlqd_and_does_not_stall_batch() {
     // Wait briefly for the malformed-entry side effects (DLQ + ack) to flush.
     sleep(Duration::from_millis(50)).await;
 
-    let dlq = backend.dlq.lock().unwrap();
-    assert_eq!(dlq.len(), 1, "malformed entry should land in DLQ");
-    assert_eq!(dlq[0].kind, "eventbus.malformed");
-    assert_eq!(dlq[0].key, "1-0");
-
-    let acks = backend.acks.lock().unwrap();
-    assert!(
-        acks.contains(&"1-0".to_string()),
-        "malformed entry must be acked so it leaves the PEL, saw: {acks:?}"
-    );
+    {
+        let dlq = backend.dlq.lock().unwrap();
+        assert_eq!(dlq.len(), 1, "malformed entry should land in DLQ");
+        assert_eq!(dlq[0].kind, "eventbus.malformed");
+        assert_eq!(dlq[0].key, "1-0");
+    }
+    {
+        let acks = backend.acks.lock().unwrap();
+        assert!(
+            acks.contains(&"1-0".to_string()),
+            "malformed entry must be acked so it leaves the PEL, saw: {acks:?}"
+        );
+    }
 
     sub.close().await.expect("close sub");
 }

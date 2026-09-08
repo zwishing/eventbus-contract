@@ -64,11 +64,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("[main] connecting to {redis_url}");
     let client = redis::Client::open(redis_url.as_str())?;
-    let conn = client.get_multiplexed_async_connection().await?;
-
-    // `stream_bus_from_connection` wraps the connection in a RedisBackend
-    // (using the default JsonCodec) and creates the bus.
-    let bus = eventbus_redis::stream_bus_from_connection(conn, StreamBusOptions::default())?;
+    // Each consumer gets a dedicated blocking reader; commands use a shared
+    // connection so an idle consumer cannot delay publishing or ACKs.
+    let bus = eventbus_redis::stream_bus_from_client(client, StreamBusOptions::default()).await?;
 
     // -----------------------------------------------------------------------
     // Subscribe

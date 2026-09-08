@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use chrono::{DateTime, Utc};
 
 use eventbus_core::EventBusError;
@@ -7,17 +9,17 @@ use eventbus_core::EventBusError;
 // ---------------------------------------------------------------------------
 
 pub trait IdempotencyStore: Send + Sync {
-    async fn is_processed(
+    fn is_processed(
         &self,
         consumer_group: &str,
         message_uid: &str,
-    ) -> Result<bool, EventBusError>;
+    ) -> impl Future<Output = Result<bool, EventBusError>> + Send;
 
-    async fn mark_processed(
+    fn mark_processed(
         &self,
         consumer_group: &str,
         message_uid: &str,
-    ) -> Result<(), EventBusError>;
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 }
 
 // ---------------------------------------------------------------------------
@@ -35,9 +37,20 @@ pub struct IdempotencyClaim {
 }
 
 pub trait IdempotencyClaimStore: Send + Sync {
-    async fn claim(&self, claim: IdempotencyClaim) -> Result<bool, EventBusError>;
+    fn claim(
+        &self,
+        claim: IdempotencyClaim,
+    ) -> impl Future<Output = Result<bool, EventBusError>> + Send;
 
-    async fn complete(&self, consumer_group: &str, message_uid: &str) -> Result<(), EventBusError>;
+    fn complete(
+        &self,
+        consumer_group: &str,
+        message_uid: &str,
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 
-    async fn release(&self, consumer_group: &str, message_uid: &str) -> Result<(), EventBusError>;
+    fn release(
+        &self,
+        consumer_group: &str,
+        message_uid: &str,
+    ) -> impl Future<Output = Result<(), EventBusError>> + Send;
 }

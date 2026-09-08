@@ -1,4 +1,3 @@
-#![allow(async_fn_in_trait)]
 //! DDD integration-event surface for the
 //! [`eventbus`](https://docs.rs/eventbus) facade.
 //!

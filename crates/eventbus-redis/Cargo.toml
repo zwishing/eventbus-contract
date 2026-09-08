@@ -13,7 +13,7 @@ tls = ["redis/tls-native-tls", "redis/tokio-native-tls-comp"]
 watermill = ["dep:rmp-serde"]
 
 [dependencies]
-eventbus-core = { path = "../eventbus-core", version = "0.2.1" }
+eventbus-core = { path = "../eventbus-core", version = "0.2.2" }
 bytes.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
@@ -26,3 +26,9 @@ tokio.workspace = true
 [dev-dependencies]
 bytes.workspace = true
 chrono = { workspace = true, features = ["serde"] }
+criterion.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[[bench]]
+name = "roundtrip"
+harness = false
